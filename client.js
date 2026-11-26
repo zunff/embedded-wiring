@@ -60,14 +60,14 @@ window.__ModuleLoader__.load({
 .ew-part-head{height:30px;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(20,22,30,.1));cursor:grab;border-radius:8px 8px 0 0;background:var(--dsw-alias-bg-layer-2,#f5f6f7)}
 .ew-part-label{font-weight:600;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ew-part-id{font-size:10px;color:var(--dsw-alias-label-tertiary,#8b909a);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;flex:0 0 auto}
-.ew-pin{position:absolute;width:50%;height:20px;display:flex;align-items:center;gap:4px;padding:0 10px;font-size:11px;color:var(--dsw-alias-label-secondary,#5c6068);white-space:nowrap;overflow:hidden}
+.ew-pin{position:absolute;width:50%;height:20px;display:flex;align-items:center;gap:4px;padding:0 10px;font-size:11px;color:var(--dsw-alias-label-secondary,#5c6068);white-space:nowrap}
 .ew-pin[data-side=left]{left:0;justify-content:flex-start}
 .ew-pin[data-side=right]{right:0;justify-content:flex-end}
 .ew-pin[data-wide=true]{width:100%}
-.ew-pin-name{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
+.ew-pin-name{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
 .ew-pin[data-role=power] .ew-pin-name{color:var(--dsw-alias-state-error-primary,#e03131)}
 .ew-pin[data-role=ground] .ew-pin-name{color:var(--dsw-alias-label-tertiary,#8b909a)}
-.ew-pin-note{font-size:9.5px;color:var(--dsw-alias-label-tertiary,#a0a5ad);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+.ew-pin-note{font-size:9.5px;color:var(--dsw-alias-label-tertiary,#a0a5ad);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0;margin-left:auto;text-align:right}
 .ew-flag{font-size:9px;line-height:1;border-radius:4px;padding:2px 4px;flex:0 0 auto;background:rgba(212,155,0,.14);color:#a87900}
 .ew-flag[data-ok=true]{background:rgba(47,158,68,.14);color:#2f9e44}
 .ew-pin-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#fff);border:1.5px solid var(--dsw-alias-label-tertiary,#8b909a);cursor:crosshair;z-index:2;transition:transform .1s}

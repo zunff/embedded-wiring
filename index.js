@@ -512,7 +512,7 @@ export function apply(ctx, config) {
         patch: {
           type: 'object',
           additionalProperties: true,
-          description: 'update_part: { label?, note?, at?, pins?, source?, verified? } — set verified true once the user confirms photo-recognized pins. set_net: { name?, kind?, volt?, protocol?, attrs?, color?, nodes? }. set_meta: { title?, board?, note? }.',
+          description: 'update_part: { label?, note?, at?, pins?, model?, source?, verified? } — set verified true once the user confirms photo-recognized pins; patch.model swaps the board/module template and drops nets whose pins the new template does not have. set_net: { name?, kind?, volt?, protocol?, attrs?, color?, nodes? }. set_meta: { title?, board?, note? }.',
         },
         at: {
           type: 'array',

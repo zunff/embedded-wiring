@@ -108,6 +108,74 @@ function codes(diagnostics) {
   assert.match(summaryText({ doc: verified, diagnostics: validate(verified) }), /照片识别·已核对/)
 }
 
+// 1e. Every shipped board has unique pin names, both edges, and a clean
+//     standalone validation (no accidental duplicate GND rows).
+{
+  const boards = [
+    ['esp32-devkitc', 30, 15, 15],
+    ['esp32-c3-devkitc-02', 30, 15, 15],
+    ['esp32-c3-devkitm-1', 30, 15, 15],
+    ['esp32-c3-supermini', 16, 8, 8],
+    ['esp32-s3-devkitc-1', 44, 22, 22],
+  ]
+  for (const [model, total, leftCount, rightCount] of boards) {
+    const doc = emptyDocument({ title: model })
+    doc.parts.push(partFromTemplate(model, 'mcu', model, [0, 0]))
+    const pins = doc.parts[0].pins
+    assert.equal(pins.length, total, `${model} pin count`)
+    assert.equal(pins.filter(pin => pin.side === 'left').length, leftCount, `${model} left`)
+    assert.equal(pins.filter(pin => pin.side === 'right').length, rightCount, `${model} right`)
+    const names = new Set(pins.map(pin => pin.name))
+    assert.equal(names.size, total, `${model} unique pin names`)
+    assert.deepEqual(validate(doc), [], `${model} standalone validation`)
+  }
+}
+
+// 1f. C3 strapping pins and S3 flash-reserved pins are reported when used.
+{
+  let doc = emptyDocument({ title: 'c3' })
+  doc.parts.push(partFromTemplate('esp32-c3-devkitc-02', 'mcu', 'C3', [0, 0]))
+  doc.parts.push(partFromTemplate('dht22', 'dht', 'DHT22', [400, 0]))
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:3V3', 'dht:VCC'] }])
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GND', 'dht:GND'] }])
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO9', 'dht:DATA'] }])
+  const found = codes(validate(doc))
+  assert.ok(found.includes('warning:strapping'), found.join(','))
+
+  let s3 = emptyDocument({ title: 's3' })
+  s3.parts.push(partFromTemplate('esp32-s3-devkitc-1', 'mcu', 'S3', [0, 0]))
+  s3.parts.push(partFromTemplate('dht22', 'dht', 'DHT22', [400, 0]))
+  s3 = applyOps(s3, [{ type: 'connect', nodes: ['mcu:3V3', 'dht:VCC'] }])
+  s3 = applyOps(s3, [{ type: 'connect', nodes: ['mcu:GND', 'dht:GND'] }])
+  s3 = applyOps(s3, [{ type: 'connect', nodes: ['mcu:GPIO35', 'dht:DATA'] }])
+  const s3Codes = codes(validate(s3))
+  assert.ok(s3Codes.includes('warning:reserved-pin'), s3Codes.join(','))
+
+  const text = summaryText({ doc: s3, diagnostics: validate(s3) })
+  assert.match(text, /板卡注意引脚/)
+  assert.match(text, /GPIO35/)
+  assert.match(text, /备注：3\.3V 逻辑/)
+}
+
+// 1g. Swapping the board model keeps wires whose pins survive and drops the rest.
+{
+  let doc = emptyDocument({ title: 'swap' })
+  doc.parts.push(partFromTemplate('esp32-devkitc', 'mcu', '', [0, 0]))
+  doc.parts.push(partFromTemplate('dht22', 'dht', 'DHT22', [400, 0]))
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:3V3', 'dht:VCC'] }])
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GND', 'dht:GND'] }])
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO36', 'dht:DATA'] }])
+  assert.equal(doc.nets.length, 3)
+  const swapped = applyOps(doc, [{ type: 'update_part', id: 'mcu', patch: { model: 'esp32-c3-supermini' } }])
+  assert.equal(swapped.parts[0].model, 'esp32-c3-supermini')
+  assert.equal(swapped.parts[0].label, 'ESP32-C3 SuperMini', 'a template label follows the model')
+  assert.equal(swapped.parts[0].pins.length, 16)
+  assert.equal(swapped.nets.length, 2, 'the GPIO36 net must be dropped')
+  assert.ok(swapped.nets.some(net => net.name === '3V3'))
+  assert.ok(swapped.nets.some(net => net.name === 'GND'))
+  assert.ok(!swapped.nets.some(net => net.nodes.includes('mcu:GPIO36')))
+}
+
 // 2. A correct DHT22 hookup validates clean.
 {
   let doc = withPart(board(), 'dht22', 'dht')
