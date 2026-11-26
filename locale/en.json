@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Embedded wiring",
+    "description": "Keeps one hardware wiring netlist per workspace in hardware/wiring.json and draws it as a draggable diagram: drag a part by its title, drag from one pin dot to another to wire them, click a wire to rename it or set its protocol and pull-up. It validates what would actually fail on the bench — missing common ground, 5V on a 3.3V pin, two outputs on one net, strapping pins, I2C without pull-ups — and the agent reads and changes the same netlist through the hardware_map tool, optionally as suggestions you apply on the page. Open it from the 接线 row in the left sidebar. It is a connection record, not an electrical check: it cannot see current, wire gauge, or EMI."
+  }
+}
