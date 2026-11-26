@@ -45,6 +45,8 @@ const workspace = { id: 'ws-1', title: 'demo', path: root, sessionIds: [] }
 const routes = []
 const tools = []
 const disposers = []
+/** The session directory the agent tool resolves from; moved to a subproject later. */
+let agentCwd = root
 
 const ctx = {
   get(name) {
@@ -55,7 +57,7 @@ const ctx = {
         resolveByPath: async value => (value === root ? workspace : undefined),
       }
     }
-    if (name === 'workingDirectory') return { ensure: async () => root }
+    if (name === 'workingDirectory') return { ensure: async () => agentCwd }
     if (name === 'webServer') {
       return { register: route => { routes.push(route); return () => {} } }
     }
@@ -202,6 +204,62 @@ try {
   const dht = final.json.doc.parts.find(part => part.id === 'dht')
   assert.deepEqual(dht.at, [420, 120])
   assert.equal(final.json.doc.meta.title, '我的接线')
+
+  // ---- Multi-project workspace --------------------------------------------
+  // One workspace holds several wiring files, each in its own directory.
+  const sensor = await call('/embedded-wiring/init', 'POST', {
+    workspace: workspace.id,
+    project: 'firmware/sensor',
+    board: 'esp32-c3-supermini',
+  })
+  assert.equal(sensor.status, 200, JSON.stringify(sensor.json))
+  assert.equal(sensor.json.project.id, 'firmware/sensor')
+  assert.equal(sensor.json.doc.parts.length, 1)
+  assert.equal(sensor.json.doc.parts[0].model, 'esp32-c3-supermini')
+
+  const projects = await readResource('/embedded-wiring/projects', 'http://x/embedded-wiring/projects')
+  assert.equal(projects.status, 200)
+  const entry = projects.json.workspaces.find(item => item.id === workspace.id)
+  assert.ok(entry !== undefined)
+  assert.deepEqual(entry.projects.map(item => item.id), ['.', 'firmware/sensor'])
+  assert.equal(entry.boards, 2)
+  assert.equal(projects.json.totals.projects, 2)
+  assert.equal(projects.json.totals.boards, 2)
+
+  const sensorState = await readResource(
+    '/embedded-wiring/state',
+    `http://x/embedded-wiring/state?workspace=${workspace.id}&project=firmware%2Fsensor`,
+  )
+  assert.equal(sensorState.json.project.id, 'firmware/sensor')
+  assert.equal(sensorState.json.boards, 1)
+  assert.equal(sensorState.json.doc.meta.title, '我的接线')
+
+  const listed = await tool.execute({ action: 'list' }, { agent: {}, signal })
+  assert.match(listed.text, /接线项目 2 个/)
+  assert.match(listed.text, /合计 2 块板/)
+  assert.match(listed.text, /firmware\/sensor — 1 板/)
+
+  // A session working inside firmware/sensor edits that project by default and
+  // leaves the root project alone.
+  agentCwd = path.join(root, 'firmware', 'sensor')
+  const rootBefore = await readResource(
+    '/embedded-wiring/state',
+    `http://x/embedded-wiring/state?workspace=${workspace.id}&project=.`,
+  )
+  const nearby = await tool.execute({ action: 'read' }, { agent: {}, signal })
+  assert.match(nearby.text, /firmware[\\/]sensor[\\/]hardware[\\/]wiring\.json/)
+  const sensorAdd = await tool.execute({ action: 'add_part', part: { model: 'dht22', id: 'dht' } }, { agent: {}, signal })
+  assert.match(sensorAdd.text, /已写入/)
+  const sensorAfter = await readResource(
+    '/embedded-wiring/state',
+    `http://x/embedded-wiring/state?workspace=${workspace.id}&project=firmware%2Fsensor`,
+  )
+  assert.equal(sensorAfter.json.doc.parts.length, 2)
+  const rootAfter = await readResource(
+    '/embedded-wiring/state',
+    `http://x/embedded-wiring/state?workspace=${workspace.id}&project=.`,
+  )
+  assert.equal(rootAfter.json.doc.parts.length, rootBefore.json.doc.parts.length, 'the root project must be untouched')
 
   console.log('routes ok')
 } finally {

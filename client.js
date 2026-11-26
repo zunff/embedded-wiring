@@ -29,7 +29,8 @@ window.__ModuleLoader__.load({
     const PAD_BOTTOM = 10
     const NET_COLORS = { power: '#e8590c', ground: '#868e96', signal: '#1c7ed6', bus: '#9c36b5' }
     const STYLE_ATTR = 'data-ew-style'
-    const STORAGE_KEY = 'ew.project'
+    const STORAGE_WS = 'ew.workspace'
+    const STORAGE_PROJECT = 'ew.project'
 
     const CSS = `
 .ew-root{position:relative;display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;overflow:hidden;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary,#17181c);background:var(--dsw-alias-bg-layer-1,#fff);font-variant-numeric:tabular-nums}
@@ -362,15 +363,60 @@ window.__ModuleLoader__.load({
         group('模块', library.parts ?? [])))
     }
 
+    /** Ask for a directory and a board, then create the netlist there. */
+    function NewProject({ boards, defaultPath, onCreate, onCancel }) {
+      const [path, setPath] = useState(defaultPath === undefined || defaultPath === '.' ? 'firmware' : defaultPath)
+      const [board, setBoard] = useState(boards?.[0]?.model ?? 'esp32-devkitc')
+      const trimmed = path.trim().replace(/^[/\\]+|[/\\]+$/g, '')
+      return h('div', {
+        className: 'ew-palette',
+        onPointerDown: event => { if (event.target === event.currentTarget) onCancel() },
+      },
+      h('div', { className: 'ew-palette-box', style: { width: 'min(440px, 100%)' } },
+        h('div', { className: 'ew-panel-title' },
+          h('span', {}, '新建接线项目'),
+          h('button', { type: 'button', className: 'ew-x', onClick: onCancel }, '✕')),
+        h('div', { className: 'ew-row' },
+          h('label', {}, '目录'),
+          h('input', {
+            className: 'ew-input',
+            value: path,
+            placeholder: 'firmware/sensor',
+            onChange: event => setPath(event.target.value),
+            onKeyDown: event => { if (event.key === 'Enter') onCreate(trimmed || '.', board) },
+          })),
+        h('div', { className: 'ew-row' },
+          h('label', {}, '板卡'),
+          h('select', {
+            className: 'ew-select',
+            value: board,
+            onChange: event => setBoard(event.target.value),
+          },
+          (boards ?? []).map(item => h('option', { key: item.model, value: item.model }, item.label)))),
+        h('div', {
+          style: { fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)', margin: '6px 0' },
+        }, `文件：${trimmed === '' ? '' : `${trimmed}/`}hardware/wiring.json`),
+        h('div', { style: { display: 'flex', gap: '8px', justifyContent: 'flex-end' } },
+          h(Button, { onClick: onCancel }, '取消'),
+          h(Button, { onClick: () => onCreate(trimmed || '.', board) }, '创建'))))
+    }
+
     // ---- Page ---------------------------------------------------------------
 
     function WiringPage() {
-      const [projects, setProjects] = useState([])
-      const [projectId, setProjectId] = useState(() => {
+      const [workspaces, setWorkspaces] = useState([])
+      const [workspaceId, setWorkspaceId] = useState(() => {
         try {
-          return window.localStorage.getItem(STORAGE_KEY) ?? ''
+          return window.localStorage.getItem(STORAGE_WS) ?? ''
         } catch {
           return ''
+        }
+      })
+      const [projectId, setProjectId] = useState(() => {
+        try {
+          return window.localStorage.getItem(STORAGE_PROJECT) ?? '.'
+        } catch {
+          return '.'
         }
       })
       const [state, setState] = useState({ exists: false, doc: undefined, diagnostics: [], counts: { errors: 0, warnings: 0 } })
@@ -385,29 +431,33 @@ window.__ModuleLoader__.load({
       const [message, setMessage] = useState('')
       const [error, setError] = useState('')
       const [conflict, setConflict] = useState(false)
+      const [newProject, setNewProject] = useState(false)
+      const [starterBoard, setStarterBoard] = useState('esp32-devkitc')
 
       const viewportRef = useRef(null)
       const stateRef = useRef(state)
       const viewRef = useRef(view)
       const dragRef = useRef(drag)
       const drawingRef = useRef(drawing)
+      const workspaceRef = useRef(workspaceId)
       const projectRef = useRef(projectId)
       const interactingRef = useRef(false)
       stateRef.current = state
       viewRef.current = view
       dragRef.current = drag
       drawingRef.current = drawing
+      workspaceRef.current = workspaceId
       projectRef.current = projectId
       interactingRef.current = busy || drag !== undefined || drawing !== undefined
 
       useEffect(() => {
         try {
-          if (projectId === '') window.localStorage.removeItem(STORAGE_KEY)
-          else window.localStorage.setItem(STORAGE_KEY, projectId)
+          window.localStorage.setItem(STORAGE_WS, workspaceId)
+          window.localStorage.setItem(STORAGE_PROJECT, projectId)
         } catch {
           // Private browsing: the selection just does not persist.
         }
-      }, [projectId])
+      }, [workspaceId, projectId])
 
       useEffect(() => {
         if (message === '') return undefined
@@ -435,11 +485,11 @@ window.__ModuleLoader__.load({
         })
       }, [])
 
-      const load = useCallback(async (id, options) => {
-        if (id === '') return
+      const load = useCallback(async (workspace, project, options) => {
+        if (workspace === '') return
         const silent = options?.silent === true
         try {
-          const payload = await call(`/state?workspace=${encodeURIComponent(id)}`)
+          const payload = await call(`/state?workspace=${encodeURIComponent(workspace)}&project=${encodeURIComponent(project ?? '.')}`)
           adopt(payload)
           if (!silent) setError('')
         } catch (failure) {
@@ -450,12 +500,21 @@ window.__ModuleLoader__.load({
       const refreshProjects = useCallback(async () => {
         try {
           const payload = await call('/projects')
-          const list = Array.isArray(payload.projects) ? payload.projects : []
-          setProjects(list)
-          if (projectRef.current === '' && list.length > 0) {
-            const chosen = list.find(project => project.exists) ?? list[0]
-            setProjectId(chosen.id)
+          const list = Array.isArray(payload.workspaces) ? payload.workspaces : []
+          setWorkspaces(list)
+          const current = workspaceRef.current
+          const chosen = list.find(item => item.id === current)
+            ?? list.find(item => (item.projects?.length ?? 0) > 0)
+            ?? list[0]
+          if (chosen === undefined) {
+            setWorkspaceId('')
+            return
           }
+          if (chosen.id !== current) setWorkspaceId(chosen.id)
+          // The saved project may be gone (deleted, or a stale value from a
+          // previous version of this page): fall back to the first project.
+          const known = (chosen.projects ?? []).some(item => item.id === projectRef.current)
+          if (!known) setProjectId(chosen.projects?.[0]?.id ?? '.')
         } catch (failure) {
           setError(failure.message)
         }
@@ -469,18 +528,19 @@ window.__ModuleLoader__.load({
       }, [refreshProjects])
 
       useEffect(() => {
-        if (projectId === '') return
-        void load(projectId)
-      }, [projectId, load])
+        if (workspaceId === '') return undefined
+        void load(workspaceId, projectId)
+        return undefined
+      }, [workspaceId, projectId, load])
 
       useEffect(() => {
-        if (projectId === '') return undefined
+        if (workspaceId === '') return undefined
         const timer = setInterval(() => {
           if (interactingRef.current) return
-          void load(projectId, { silent: true })
+          void load(workspaceId, projectId, { silent: true })
         }, POLL_MS)
         return () => clearInterval(timer)
-      }, [projectId, load])
+      }, [workspaceId, projectId, load])
 
       const save = useCallback(async (ops, label) => {
         const doc = stateRef.current.doc
@@ -488,7 +548,12 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setError('')
         try {
-          const payload = await post('/ops', { workspace: projectRef.current, baseRev: doc.rev, ops })
+          const payload = await post('/ops', {
+            workspace: workspaceRef.current,
+            project: projectRef.current,
+            baseRev: doc.rev,
+            ops,
+          })
           adopt(payload)
           setMessage(label ?? '已保存')
           setConflict(false)
@@ -693,12 +758,20 @@ window.__ModuleLoader__.load({
       }
       const applyPending = () => { void save([{ type: 'apply_pending' }], '已应用建议') }
       const discardPending = () => { void save([{ type: 'discard_pending' }], '已忽略建议') }
-      const createProject = async () => {
+      const createProject = async (path, board) => {
         setBusy(true)
+        setError('')
         try {
-          const payload = await post('/init', { workspace: projectId })
+          const payload = await post('/init', {
+            workspace: workspaceRef.current,
+            project: path,
+            board,
+          })
           adopt(payload)
-          setMessage('已创建接线项目')
+          const created = payload.project?.id ?? path
+          setProjectId(created)
+          setNewProject(false)
+          setMessage(`已创建项目 ${created}`)
           void refreshProjects()
         } catch (failure) {
           setError(failure.message)
@@ -852,11 +925,24 @@ window.__ModuleLoader__.load({
 
       const emptyEl = h('div', { className: 'ew-empty' },
         h('div', { className: 'ew-card' },
-          h('h3', {}, state.exists ? '接线文件读不出来' : '这个工作区还没有接线图'),
+          h('h3', {}, state.exists ? '接线文件读不出来' : '这个项目还没有接线图'),
           h('p', {}, state.exists
-            ? '文件存在但不是合法 JSON。修正或删除 hardware/wiring.json 后点「重新读取」。'
-            : '接线图是一份 JSON 网表，放在工作区的 hardware/wiring.json。创建后会放一块 ESP32 板卡，然后就可以从引脚拖线了。'),
-          h(Button, { onClick: createProject, disabled: busy || projectId === '' }, '创建 ESP32 项目')))
+            ? `文件存在但不是合法 JSON：${state.project?.path ?? ''}。修正或删除后点「重新读取」。`
+            : `接线图是一份 JSON 网表，会写在 ${state.project?.path ?? '<项目目录>/hardware/wiring.json'}，跟着这个仓库走。选一块板卡开始，之后就可以从引脚拖线。`),
+          h('div', { className: 'ew-row' },
+            h('label', {}, '板卡'),
+            h('select', {
+              className: 'ew-select',
+              value: starterBoard,
+              onChange: event => setStarterBoard(event.target.value),
+            },
+            library.boards.length === 0
+              ? h('option', { value: 'esp32-devkitc' }, 'ESP32 DevKitC')
+              : library.boards.map(board => h('option', { key: board.model, value: board.model }, board.label)))),
+          h(Button, {
+            onClick: () => createProject(projectId, starterBoard),
+            disabled: busy || workspaceId === '',
+          }, '创建项目')))
 
       const pendingEl = pending.length === 0 ? null : h('div', { className: 'ew-pending' },
         h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, `Agent 建议 ${pending.length} 项`),
@@ -905,24 +991,43 @@ window.__ModuleLoader__.load({
             }, '定位')
             : null)))
 
+      const workspace = workspaces.find(item => item.id === workspaceId)
+      const projects = workspace?.projects ?? []
+
       const bar = h('div', { className: 'ew-bar' },
+        h('select', {
+          className: 'ew-select',
+          value: workspaceId,
+          onChange: event => {
+            const next = workspaces.find(item => item.id === event.target.value)
+            setWorkspaceId(event.target.value)
+            if (next !== undefined) setProjectId(next.projects?.[0]?.id ?? '.')
+          },
+          title: '工作区',
+        },
+        workspaces.length === 0 ? h('option', { value: '' }, '没有可用的工作区') : null,
+        workspaces.map(item => h('option', { key: item.id, value: item.id }, `${item.title}（${item.projects?.length ?? 0} 项目）`))),
         h('select', {
           className: 'ew-select',
           value: projectId,
           onChange: event => setProjectId(event.target.value),
-          title: '选择工作区；接线文件在 <工作区>/hardware/wiring.json',
+          title: '项目：一个项目就是一份 hardware/wiring.json',
         },
-        projects.length === 0 ? h('option', { value: '' }, '没有可用的工作区') : null,
-        projects.map(project => h('option', { key: project.id, value: project.id }, `${project.title}${project.exists ? '' : '（空）'}`))),
+        projects.length === 0
+          ? h('option', { value: projectId }, projectId === '.' ? '（还没有项目）' : projectId)
+          : projects.map(project => h('option', { key: project.id, value: project.id },
+            `${project.id === '.' ? '根目录' : project.id} · ${project.boards}板/${project.nets}网${project.errors > 0 ? ` · ${project.errors}E` : ''}`))),
+        h(Button, { onClick: () => setNewProject(true), disabled: workspaceId === '' }, '＋ 新项目'),
         h(Button, { onClick: () => setPalette(true), disabled: doc === undefined }, '＋ 添加硬件'),
         h(Button, { onClick: fit, disabled: doc === undefined }, '适配视图'),
         h(Button, {
           onClick: () => setShowDiagnostics(value => !value),
           pressed: showDiagnostics,
         }, `诊断 ${state.counts.errors}E/${state.counts.warnings}W`),
-        h(Button, { onClick: () => { void load(projectId); void refreshProjects() } }, '重新读取'),
+        h(Button, { onClick: () => { void load(workspaceId, projectId); void refreshProjects() } }, '重新读取'),
         h('span', { className: 'ew-grow' }),
         message === '' ? null : h('span', { className: 'ew-status' }, message),
+        h('span', { className: 'ew-badge', title: '这个工作区里识别到的项目与板卡数' }, `${projects.length} 项目 · ${workspace?.boards ?? 0} 板`),
         busy ? h('span', { className: 'ew-badge' }, '保存中…') : null,
         doc === undefined ? null : h('span', { className: 'ew-badge', title: `文件 ${state.project?.path ?? ''}` }, `rev ${doc.rev}`))
 
@@ -932,7 +1037,7 @@ window.__ModuleLoader__.load({
 
       const conflictEl = conflict ? h('div', { className: 'ew-alert' },
         h('span', { className: 'ew-grow' }, '这个文件刚被别处改过（可能是 Agent）。为避免覆盖，请先重新读取。'),
-        h(Button, { onClick: () => { setConflict(false); void load(projectId) } }, '重新读取'),
+        h(Button, { onClick: () => { setConflict(false); void load(workspaceId, projectId) } }, '重新读取'),
         h('button', { type: 'button', className: 'ew-x', onClick: () => setConflict(false) }, '✕')) : null
 
       const viewport = h('div', {
@@ -952,7 +1057,15 @@ window.__ModuleLoader__.load({
         conflictEl,
         viewport,
         diagnosticsEl,
-        palette ? h(Palette, { library, onPick: addPart, onClose: () => setPalette(false) }) : null)
+        palette ? h(Palette, { library, onPick: addPart, onClose: () => setPalette(false) }) : null,
+        newProject
+          ? h(NewProject, {
+            boards: library.boards,
+            defaultPath: projectId,
+            onCancel: () => setNewProject(false),
+            onCreate: createProject,
+          })
+          : null)
     }
 
     // ---- Registration -------------------------------------------------------

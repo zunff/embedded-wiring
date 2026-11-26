@@ -12,6 +12,7 @@
 
 import path from 'node:path'
 import { createProjectStore } from './lib/store.js'
+import { discoverProjects, nearestProject } from './lib/discover.js'
 import { catalog, partFromTemplate } from './lib/library.js'
 import {
   WiringError,
@@ -30,7 +31,9 @@ export const inject = ['tools']
 
 const DEFAULT_FILE = 'hardware/wiring.json'
 const MAX_BODY_BYTES = 256 * 1024
-const MAX_PROJECTS = 30
+const MAX_WORKSPACES = 30
+const MAX_PROJECTS = 60
+const DEFAULT_BOARD = 'esp32-devkitc'
 
 /** A relative, in-project file path; an absolute or escaping config is refused. */
 function safeFile(value) {
@@ -71,44 +74,66 @@ export function apply(ctx, config) {
     return store
   }
 
-  /** Workspace record for a directory, when the registry knows it. */
-  async function describe(root) {
+  /** Workspace record for a directory (the nearest registered ancestor, else itself). */
+  function workspaceOfDir(root) {
     const registry = ctx.get('workspaceRegistry')
-    let workspace
     if (registry !== undefined) {
-      try {
-        workspace = await registry.resolveByPath(root)
-      } catch {
-        // An unreadable directory is still a usable project root for the file.
+      for (const candidate of registry.list()) {
+        if (root === candidate.path || root.startsWith(candidate.path + path.sep)) {
+          return { id: candidate.id, title: candidate.title, root: candidate.path }
+        }
       }
     }
+    return { id: root, title: path.basename(root) || root, root }
+  }
+
+  function relOf(root, dir) {
+    const rel = path.relative(root, dir).split(path.sep).join('/')
+    return rel === '' ? '.' : rel
+  }
+
+  /** One project: a directory with its own wiring file inside a workspace. */
+  function projectAt(dir, workspace, rel) {
+    const cleanRel = rel === '' || rel === undefined ? '.' : rel
     return {
-      id: workspace?.id ?? root,
-      title: workspace?.title ?? (path.basename(root) || root),
-      root,
-      path: fileOf(root),
+      id: cleanRel,
+      title: cleanRel === '.' ? workspace.title : path.basename(dir),
+      root: path.resolve(dir),
+      path: fileOf(dir),
+      workspace: { id: workspace.id, title: workspace.title, root: workspace.root },
     }
   }
 
-  /** Project resolved from a workspace id, an absolute directory, or nothing (most recent). */
-  async function resolveProject(reference) {
+  /** Resolve the `{ workspace, project }` pair the page sends; project is workspace-relative. */
+  async function resolveProject(input) {
+    const workspace = await workspaceRoot(input?.workspace)
+    const requested = typeof input?.project === 'string' ? input.project.trim() : ''
+    if (path.isAbsolute(requested)) {
+      const dir = path.resolve(requested)
+      return projectAt(dir, workspaceOfDir(dir), relOf(workspaceOfDir(dir).root, dir))
+    }
+    const rel = requested.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '')
+    if (rel.split('/').includes('..')) throw new WiringError('项目路径必须在工作区内')
+    const dir = path.resolve(workspace.root, rel)
+    if (!(dir === workspace.root || dir.startsWith(workspace.root + path.sep))) {
+      throw new WiringError('项目路径必须在工作区内')
+    }
+    return projectAt(dir, workspace, rel)
+  }
+
+  async function workspaceRoot(reference) {
     const registry = ctx.get('workspaceRegistry')
     if (typeof reference === 'string' && reference !== '') {
-      if (path.isAbsolute(reference)) return describe(reference)
-      if (registry !== undefined) {
-        const workspace = registry.get(reference)
-        if (workspace !== undefined) return describe(workspace.path)
-      }
-      const list = registry?.list() ?? []
-      const byPath = list.find(workspace => workspace.path === reference)
-      if (byPath !== undefined) return describe(byPath.path)
-      throw new WiringError(`找不到项目「${reference}」。先 GET /embedded-wiring/projects 看可用的工作区。`)
+      if (path.isAbsolute(reference)) return workspaceOfDir(reference)
+      const found = registry?.get(reference)
+      if (found !== undefined) return { id: found.id, title: found.title, root: found.path }
+      const byPath = registry?.list().find(candidate => candidate.path === reference)
+      if (byPath !== undefined) return { id: byPath.id, title: byPath.title, root: byPath.path }
+      throw new WiringError(`找不到工作区「${reference}」`)
     }
-    if (registry !== undefined) {
-      const [first] = registry.list()
-      if (first !== undefined) return describe(first.path)
-    }
-    if (configuredRoot !== '') return describe(configuredRoot)
+    const [first] = registry?.list() ?? []
+    if (first !== undefined) return { id: first.id, title: first.title, root: first.path }
+    if (configuredRoot !== '') return { id: configuredRoot, title: path.basename(configuredRoot), root: configuredRoot }
     throw new WiringError('本 profile 没有工作区注册表，也没有配置 config.root：无法确定接线文件放在哪个项目里。')
   }
 
@@ -127,17 +152,28 @@ export function apply(ctx, config) {
     return process.cwd()
   }
 
-  /** Tool: args.project wins, else the session directory. */
+  /**
+   * Tool project: an explicit `project` wins (workspace id, workspace-relative
+   * path, or absolute directory); otherwise the nearest wiring file at or above
+   * the session directory, so working in `firmware/sensor` finds that board.
+   */
   async function projectForTool(args, exec) {
+    const sessionRoot = await agentRoot(exec)
+    const workspace = workspaceOfDir(sessionRoot)
     const reference = typeof args?.project === 'string' ? args.project.trim() : ''
     if (reference !== '') {
-      if (path.isAbsolute(reference)) return describe(reference)
-      const registry = ctx.get('workspaceRegistry')
-      const workspace = registry?.get(reference)
-      if (workspace !== undefined) return describe(workspace.path)
-      throw new WiringError(`找不到项目「${reference}」`)
+      if (path.isAbsolute(reference)) {
+        const dir = path.resolve(reference)
+        const own = workspaceOfDir(dir)
+        return projectAt(dir, own, relOf(own.root, dir))
+      }
+      const found = ctx.get('workspaceRegistry')?.get(reference)
+      if (found !== undefined) return projectAt(found.path, found, '.')
+      const dir = path.resolve(sessionRoot, reference)
+      return projectAt(dir, workspace, relOf(workspace.root, dir))
     }
-    return describe(await agentRoot(exec))
+    const near = await nearestProject(sessionRoot, workspace.root, file)
+    return projectAt(near, workspace, relOf(workspace.root, near))
   }
 
   /** One mutation path shared by the page's POST and the agent's tool. */
@@ -168,10 +204,12 @@ export function apply(ctx, config) {
     return { project, doc, diagnostics, counts, text }
   }
 
-  /** Create the starter project: the board alone, so the user has something to drag from. */
-  function starterDocument() {
-    const doc = emptyDocument({ title: '我的接线', board: 'ESP32 DevKitC' })
-    doc.parts.push(partFromTemplate('esp32-devkitc', 'mcu', 'ESP32 DevKitC', [80, 90]))
+  /** Create an empty project with one board, so the page has something to drag from. */
+  function starterDocument(boardModel) {
+    const model = typeof boardModel === 'string' && boardModel.trim() !== '' ? boardModel.trim() : DEFAULT_BOARD
+    const part = partFromTemplate(model, 'mcu', '', [80, 90])
+    const doc = emptyDocument({ title: '我的接线', board: part.label })
+    doc.parts.push(part)
     return doc
   }
 
@@ -260,9 +298,12 @@ export function apply(ctx, config) {
         }
         return true
       }
-      const workspaceOf = (request) => {
+      const queryOf = (request) => {
         const url = new URL(request.url)
-        return url.searchParams.get('workspace') ?? undefined
+        return {
+          workspace: url.searchParams.get('workspace') ?? undefined,
+          project: url.searchParams.get('project') ?? undefined,
+        }
       }
 
       const routes = [
@@ -272,28 +313,56 @@ export function apply(ctx, config) {
           resource: async () => {
             try {
               const registry = ctx.get('workspaceRegistry')
-              const workspaces = registry === undefined ? [] : registry.list().slice(0, MAX_PROJECTS)
-              const projects = []
-              for (const workspace of workspaces) {
-                const project = await describe(workspace.path)
-                const stored = await storeOf(workspace.path).read()
-                const diagnostics = stored.doc === undefined ? [] : validate(stored.doc)
-                const counts = countDiagnostics(diagnostics)
-                projects.push({
-                  id: project.id,
-                  title: project.title,
-                  root: project.root,
-                  path: project.path,
-                  exists: stored.exists && stored.doc !== undefined,
-                  rev: stored.doc?.rev ?? 0,
-                  parts: stored.doc?.parts.length ?? 0,
-                  nets: stored.doc?.nets.length ?? 0,
-                  errors: counts.errors,
-                  warnings: counts.warnings,
-                  error: stored.error,
+              const list = registry === undefined ? [] : registry.list().slice(0, MAX_WORKSPACES)
+              const workspaces = []
+              const totals = { workspaces: 0, projects: 0, boards: 0, errors: 0 }
+              for (const workspace of list) {
+                const found = (await discoverProjects(workspace.path, file)).slice(0, MAX_PROJECTS)
+                found.sort((left, right) => {
+                  if (left.rel === '') return -1
+                  if (right.rel === '') return 1
+                  return left.rel.localeCompare(right.rel)
                 })
+                const projects = []
+                let boards = 0
+                let errors = 0
+                for (const hit of found) {
+                  const project = projectAt(hit.dir, workspace, hit.rel)
+                  const stored = await storeOf(hit.dir).read()
+                  const diagnostics = stored.doc === undefined ? [] : validate(stored.doc)
+                  const counts = countDiagnostics(diagnostics)
+                  const boardCount = stored.doc === undefined
+                    ? 0
+                    : stored.doc.parts.filter(part => part.kind === 'board').length
+                  boards += boardCount
+                  errors += counts.errors
+                  projects.push({
+                    id: project.id,
+                    title: project.title,
+                    root: project.root,
+                    path: project.path,
+                    boards: boardCount,
+                    rev: stored.doc?.rev ?? 0,
+                    parts: stored.doc?.parts.length ?? 0,
+                    nets: stored.doc?.nets.length ?? 0,
+                    errors: counts.errors,
+                    warnings: counts.warnings,
+                    error: stored.error,
+                  })
+                }
+                workspaces.push({
+                  id: workspace.id,
+                  title: workspace.title,
+                  root: workspace.path,
+                  projects,
+                  boards,
+                })
+                totals.workspaces += 1
+                totals.projects += projects.length
+                totals.boards += boards
+                totals.errors += errors
               }
-              return json({ projects })
+              return json({ workspaces, totals })
             } catch (error) {
               return failure(error)
             }
@@ -305,12 +374,19 @@ export function apply(ctx, config) {
           path: '/embedded-wiring/state',
           resource: async (request) => {
             try {
-              const project = await resolveProject(workspaceOf(request))
+              const project = await resolveProject(queryOf(request))
               const stored = await storeOf(project.root).read()
               if (stored.error !== undefined) return json({ project, exists: stored.exists, error: stored.error })
               if (stored.doc === undefined) return json({ project, exists: false })
               const result = report(project, stored.doc)
-              return json({ project, exists: true, doc: result.doc, diagnostics: result.diagnostics, counts: result.counts })
+              return json({
+                project,
+                exists: true,
+                doc: result.doc,
+                diagnostics: result.diagnostics,
+                counts: result.counts,
+                boards: result.doc.parts.filter(part => part.kind === 'board').length,
+              })
             } catch (error) {
               return failure(error)
             }
@@ -329,7 +405,7 @@ export function apply(ctx, config) {
                 return
               }
               const payload = parsed.value
-              const project = await resolveProject(payload?.workspace)
+              const project = await resolveProject(payload)
               const baseRev = Number.isFinite(payload?.baseRev) ? payload.baseRev : undefined
               const ops = Array.isArray(payload?.ops) ? payload.ops : []
               if (ops.length === 0) {
@@ -347,6 +423,7 @@ export function apply(ctx, config) {
                 doc: result.doc,
                 diagnostics: result.diagnostics,
                 counts: result.counts,
+                boards: result.doc.parts.filter(part => part.kind === 'board').length,
               })
             } catch (error) {
               sendFailure(response, error)
@@ -365,7 +442,8 @@ export function apply(ctx, config) {
                 send(response, parsed.status, { error: parsed.message })
                 return
               }
-              const project = await resolveProject(parsed.value?.workspace)
+              const payload = parsed.value
+              const project = await resolveProject(payload)
               const stored = await storeOf(project.root).read()
               if (stored.error !== undefined) {
                 send(response, 400, { error: stored.error })
@@ -384,7 +462,7 @@ export function apply(ctx, config) {
               }
               const doc = await storeOf(project.root).update(base => (base.parts.length > 0 || base.nets.length > 0
                 ? base
-                : Object.assign(starterDocument(), { rev: base.rev })))
+                : Object.assign(starterDocument(payload?.board), { rev: base.rev })))
               const result = report(project, doc)
               send(response, 200, {
                 project,
@@ -462,10 +540,11 @@ export function apply(ctx, config) {
   ctx.tools.register({
     name: 'hardware_map',
     description: [
-      'Read or change the embedded hardware wiring netlist of the current project (hardware/wiring.json).',
+      'Read or change the embedded hardware wiring netlist of the current project (a hardware/wiring.json inside the workspace).',
+      'A workspace can hold several wiring projects, one per directory (the file travels with its repo). Use action "list" to see them and how many boards each has.',
       'Use action "read" before discussing pins, power, or code generation: it returns parts, nets, unconnected pins, and diagnostics.',
       'Nodes are "partId:pinName", for example "mcu:GPIO4" or "dht:DATA".',
-      'The ESP32 board model is "esp32-devkitc"; module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
+      'Board models: esp32-devkitc, esp32-c3-devkitc-02, esp32-c3-devkitm-1, esp32-c3-supermini, esp32-s3-devkitc-1. Module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
       'When the user sends a photo of a module: identify it, then call add_part with an explicit "pins" array (name, role, volt, maxVolt, side) and part.source "photo"; keep it unverified until the user confirms the pin order on the wiring page, and say what you assumed.',
       'Changes that the user should see and confirm first go through action "propose" with the same ops; the user applies them on the wiring page, or you call "apply_pending" when they say so.',
       'Electrical problems do not block a write: they come back as diagnostics with severity error/warning.',
@@ -476,15 +555,15 @@ export function apply(ctx, config) {
         action: {
           type: 'string',
           enum: [
-            'read', 'check', 'add_part', 'update_part', 'remove_part', 'connect',
+            'list', 'read', 'check', 'add_part', 'update_part', 'remove_part', 'connect',
             'disconnect', 'unlink', 'set_net', 'move', 'set_meta',
             'propose', 'apply_pending', 'discard_pending',
           ],
-          description: 'read/check do not modify the file; every other action writes.',
+          description: 'list/read/check do not modify a file; every other action writes.',
         },
         project: {
           type: 'string',
-          description: 'Workspace id or absolute directory. Defaults to the session working directory.',
+          description: 'Workspace id, workspace-relative project path (for example "firmware/sensor"), or an absolute directory. Defaults to the nearest project at or above the session working directory.',
         },
         nodes: {
           type: 'array',
@@ -541,6 +620,40 @@ export function apply(ctx, config) {
     async execute(args, exec) {
       const action = args?.action
       if (typeof action !== 'string') throw new WiringError('需要 action')
+
+      // `list` describes every project in the session's workspace, so it runs
+      // before a project is resolved.
+      if (action === 'list') {
+        const sessionRoot = await agentRoot(exec)
+        const workspace = workspaceOfDir(sessionRoot)
+        const found = (await discoverProjects(workspace.root, file)).slice(0, MAX_PROJECTS)
+        found.sort((left, right) => {
+          if (left.rel === '') return -1
+          if (right.rel === '') return 1
+          return left.rel.localeCompare(right.rel)
+        })
+        const lines = [`工作区「${workspace.title}」下的接线项目 ${found.length} 个：`]
+        let boards = 0
+        for (const hit of found) {
+          const stored = await storeOf(hit.dir).read()
+          const doc = stored.doc
+          const boardCount = doc === undefined ? 0 : doc.parts.filter(part => part.kind === 'board').length
+          boards += boardCount
+          const rel = hit.rel === '' ? '.' : hit.rel
+          const state = stored.error !== undefined
+            ? '（文件读不出来）'
+            : doc === undefined
+              ? '（空）'
+              : `${boardCount} 板 / ${doc.parts.length} 部件 / ${doc.nets.length} 网络`
+          lines.push(`  ${rel} — ${state}`)
+        }
+        if (found.length === 0) {
+          lines.push('  （还没有接线项目：用 add_part 指定 project 创建第一个，或在页面上新建项目）')
+        }
+        lines.push(`合计 ${boards} 块板。读写某个项目时传 project:"<相对路径>"（"." 表示工作区根）。`)
+        return { text: lines.join('\n') }
+      }
+
       const project = await projectForTool(args, exec)
       const store = storeOf(project.root)
       const stored = await store.read()
@@ -548,7 +661,9 @@ export function apply(ctx, config) {
 
       if (action === 'read' || action === 'check') {
         if (stored.doc === undefined) {
-          return { text: `${summaryText({ project, doc: emptyDocument(), diagnostics: [] })}\n（项目还没有接线文件，首次写入时会创建）` }
+          return {
+            text: `${summaryText({ project, doc: emptyDocument(), diagnostics: [] })}\n（项目「${project.id}」还没有接线文件，首次写入时会创建）`,
+          }
         }
         const result = report(project, stored.doc)
         return { text: result.text }

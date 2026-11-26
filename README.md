@@ -25,23 +25,18 @@
 
 ## 文件在哪
 
-`<工作区>/hardware/wiring.json`。跟着项目走，可以提交进 git，改坏了直接回滚。页面顶栏可以选择不同工作区，A 项目的接线不会串到 B 项目。
+**一个工作区可以有多个接线项目**：每个放了 `hardware/wiring.json` 的目录就是一个项目，文件跟着它所在的那个仓库/固件目录走，可以提交进 git，改坏了直接回滚。
+
+- 打开页面时会扫一遍工作区（最多 6 层，跳过 `node_modules`、`.git`、`dist`、`build` 这些），把找到的项目列在顶栏的项目下拉里，形如 `firmware/sensor · 1板/3网`；`. ` 表示工作区根目录那份
+- 顶栏右边显示这个工作区一共识别到 **N 个项目 / M 块板**（板 = 文件里 `kind: "board"` 的部件）
+- 切换项目就是切换画布；两个项目各写各的文件，互不影响
+- 「＋ 新项目」可以在任意子目录里创建一份新的，顺便选初板卡；目录不存在会自动建
 
 ```json
-{
-  "version": 1,
-  "rev": 12,
-  "meta": { "title": "我的接线", "board": "ESP32 DevKitC", "updatedAt": "..." },
-  "parts": [
-    { "id": "mcu", "model": "esp32-devkitc", "kind": "board", "label": "ESP32 DevKitC",
-      "at": [80, 90], "pins": [{ "name": "GPIO4", "role": "bidir" }] }
-  ],
-  "nets": [
-    { "id": "n3", "name": "DHT_DATA", "kind": "signal",
-      "nodes": ["mcu:GPIO4", "dht:DATA"], "protocol": "1wire", "attrs": { "pullup": "4.7k" } }
-  ],
-  "pending": []
-}
+{ "version": 1, "rev": 12, "meta": { "title": "我的接线", "board": "ESP32 DevKitC" },
+  "parts": [ { "id": "mcu", "model": "esp32-devkitc", "kind": "board", "pins": [ ... ] } ],
+  "nets": [ { "id": "n3", "name": "DHT_DATA", "kind": "signal", "nodes": ["mcu:GPIO4", "dht:DATA"] } ],
+  "pending": [] }
 ```
 
 `pins` 在添加部件时从型号模板拷进项目，所以库更新不会偷偷改你的项目；照片/手册认出来的自定义硬件直接写 `pins` 数组即可。`at` 只是画布坐标，Agent 不需要碰。
@@ -52,12 +47,15 @@
 
 | action | 作用 |
 |---|---|
+| `list` | 列出工作区里所有接线项目，各自几块板、几个网络 |
 | `read` / `check` | 返回部件、网络、未连接引脚、校验结果，不写文件 |
 | `add_part` | 加板卡/模块（`model`），或自定义 `pins` |
 | `connect` / `disconnect` / `unlink` | 连线、删网络、把单个引脚从网络里摘掉 |
 | `set_net` / `move` / `set_meta` | 改网络属性、摆位置、改项目标题 |
 | `propose` | 把一批改动挂成「建议」，页面顶部出现「应用 / 忽略」 |
 | `apply_pending` / `discard_pending` | 应用或忽略建议（你说「按这个改」时它才调） |
+
+`project` 参数可以传工作区相对路径（`"firmware/sensor"`）、工作区 id，或绝对目录；不传时**从会话当前目录往上找最近的 `hardware/wiring.json`**，所以在 `firmware/sensor` 里干活时默认改的就是这个项目的接线。
 
 节点写法是 `部件id:引脚名`，例如 `mcu:GPIO4`、`dht:DATA`。ESP32 板卡模型是 `esp32-devkitc`；模块库有 dht22、dht11、bme280、mpu6050、ssd1306、bh1750、hcsr04、sg90、relay、neopixel、sdcard、led、button、potentiometer、buzzer。
 
