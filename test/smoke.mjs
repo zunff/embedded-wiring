@@ -45,6 +45,69 @@ function codes(diagnostics) {
   assert.match(text, /未连接的引脚/)
 }
 
+// 1b. The board carries the physical two-column layout, left first.
+{
+  const doc = board()
+  const left = doc.parts[0].pins.filter(pin => pin.side === 'left')
+  const right = doc.parts[0].pins.filter(pin => pin.side === 'right')
+  assert.equal(left.length, 15)
+  assert.equal(right.length, 15)
+  assert.deepEqual(left.slice(0, 2).map(pin => pin.name), ['3V3', 'EN'])
+  assert.equal(left[left.length - 1].name, 'GND')
+  assert.equal(right[0].name, '5V')
+  assert.equal(right[right.length - 1].name, 'GPIO23')
+}
+
+// 1c. A file written before edges existed gains them from the library, in the
+//     library's physical order.
+{
+  const legacy = {
+    version: 1,
+    rev: 3,
+    meta: { title: 'legacy' },
+    parts: [{
+      id: 'mcu',
+      model: 'esp32-devkitc',
+      kind: 'board',
+      label: 'ESP32',
+      at: [0, 0],
+      pins: [
+        { name: 'GPIO4', role: 'bidir' },
+        { name: '3V3', role: 'power', volt: 3.3 },
+        { name: '5V', role: 'power', volt: 5 },
+      ],
+    }],
+    nets: [],
+  }
+  const doc = normalizeDocument(legacy)
+  const pins = doc.parts[0].pins
+  assert.deepEqual(pins.map(pin => [pin.name, pin.side]), [['3V3', 'left'], ['5V', 'right'], ['GPIO4', 'right']])
+}
+
+// 1d. A photo-recognized part stays flagged until it is verified.
+{
+  const doc = applyOps(board(), [{
+    type: 'add_part',
+    part: {
+      id: 'sen',
+      model: 'custom',
+      label: '照片里的模块',
+      source: 'photo',
+      pins: [
+        { name: 'VCC', role: 'power', volt: 3.3, maxVolt: 5 },
+        { name: 'OUT', role: 'output' },
+        { name: 'GND', role: 'ground' },
+      ],
+    },
+  }])
+  assert.ok(codes(validate(doc)).includes('warning:photo-unverified'))
+  assert.equal(doc.parts[1].pins[0].side, 'left')
+  assert.match(summaryText({ doc, diagnostics: validate(doc) }), /照片识别·待核对/)
+  const verified = applyOps(doc, [{ type: 'update_part', id: 'sen', patch: { verified: true } }])
+  assert.ok(!codes(validate(verified)).includes('warning:photo-unverified'))
+  assert.match(summaryText({ doc: verified, diagnostics: validate(verified) }), /照片识别·已核对/)
+}
+
 // 2. A correct DHT22 hookup validates clean.
 {
   let doc = withPart(board(), 'dht22', 'dht')

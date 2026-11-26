@@ -143,6 +143,35 @@ try {
   assert.equal(applied.json.doc.nets.length, 3)
   assert.equal(applied.json.counts.errors, 0)
 
+  // A photo-recognized part arrives unverified and the page can confirm it.
+  const photo = await call('/embedded-wiring/ops', 'POST', {
+    workspace: workspace.id,
+    baseRev: applied.json.rev,
+    ops: [{
+      type: 'add_part',
+      part: {
+        id: 'photo1',
+        model: 'custom',
+        label: '照片里的模块',
+        source: 'photo',
+        pins: [
+          { name: 'VCC', role: 'power', volt: 3.3, maxVolt: 5 },
+          { name: 'DATA', role: 'bidir' },
+          { name: 'GND', role: 'ground' },
+        ],
+      },
+    }],
+  })
+  assert.equal(photo.status, 200)
+  assert.ok(photo.json.diagnostics.some(item => item.code === 'photo-unverified'))
+  const confirmed = await call('/embedded-wiring/ops', 'POST', {
+    workspace: workspace.id,
+    baseRev: photo.json.rev,
+    ops: [{ type: 'update_part', id: 'photo1', patch: { verified: true } }],
+  })
+  assert.equal(confirmed.status, 200)
+  assert.ok(!confirmed.json.diagnostics.some(item => item.code === 'photo-unverified'))
+
   // A stale write is refused with the current document, never applied.
   const stale = await call('/embedded-wiring/ops', 'POST', {
     workspace: workspace.id,
@@ -151,7 +180,7 @@ try {
   })
   assert.equal(stale.status, 409)
   assert.equal(stale.json.conflict, true)
-  assert.equal(stale.json.doc.rev, applied.json.rev)
+  assert.equal(stale.json.doc.rev, confirmed.json.rev)
 
   // Write guards.
   assert.equal((await call('/embedded-wiring/ops', 'GET')).status, 405)

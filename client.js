@@ -60,11 +60,16 @@ window.__ModuleLoader__.load({
 .ew-part-head{height:30px;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(20,22,30,.1));cursor:grab;border-radius:8px 8px 0 0;background:var(--dsw-alias-bg-layer-2,#f5f6f7)}
 .ew-part-label{font-weight:600;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ew-part-id{font-size:10px;color:var(--dsw-alias-label-tertiary,#8b909a);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;flex:0 0 auto}
-.ew-pin{position:absolute;left:0;right:0;height:20px;display:flex;align-items:center;gap:6px;padding:0 10px;font-size:11px;color:var(--dsw-alias-label-secondary,#5c6068);white-space:nowrap}
-.ew-pin[data-side=right]{justify-content:flex-end}
+.ew-pin{position:absolute;width:50%;height:20px;display:flex;align-items:center;gap:4px;padding:0 10px;font-size:11px;color:var(--dsw-alias-label-secondary,#5c6068);white-space:nowrap;overflow:hidden}
+.ew-pin[data-side=left]{left:0;justify-content:flex-start}
+.ew-pin[data-side=right]{right:0;justify-content:flex-end}
+.ew-pin[data-wide=true]{width:100%}
+.ew-pin-name{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto}
 .ew-pin[data-role=power] .ew-pin-name{color:var(--dsw-alias-state-error-primary,#e03131)}
 .ew-pin[data-role=ground] .ew-pin-name{color:var(--dsw-alias-label-tertiary,#8b909a)}
-.ew-pin-note{font-size:9.5px;color:var(--dsw-alias-label-tertiary,#a0a5ad);overflow:hidden;text-overflow:ellipsis;max-width:92px}
+.ew-pin-note{font-size:9.5px;color:var(--dsw-alias-label-tertiary,#a0a5ad);overflow:hidden;text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+.ew-flag{font-size:9px;line-height:1;border-radius:4px;padding:2px 4px;flex:0 0 auto;background:rgba(212,155,0,.14);color:#a87900}
+.ew-flag[data-ok=true]{background:rgba(47,158,68,.14);color:#2f9e44}
 .ew-pin-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#fff);border:1.5px solid var(--dsw-alias-label-tertiary,#8b909a);cursor:crosshair;z-index:2;transition:transform .1s}
 .ew-pin-dot:hover{transform:scale(1.4);border-color:var(--dsw-alias-brand-primary,#4c8dff);background:var(--dsw-alias-brand-primary,#4c8dff)}
 .ew-pin[data-side=left] .ew-pin-dot{left:-5px}
@@ -126,23 +131,55 @@ window.__ModuleLoader__.load({
 
     // ---- Geometry -----------------------------------------------------------
 
+    /** Which edge a pin sits on; a missing side means the part's default edge. */
+    function sideOf(part, pin) {
+      if (pin.side === 'left' || pin.side === 'right') return pin.side
+      return part.kind === 'board' ? 'right' : 'left'
+    }
+
+    function sideCounts(part) {
+      let left = 0
+      let right = 0
+      for (const pin of part.pins) {
+        if (sideOf(part, pin) === 'right') right += 1
+        else left += 1
+      }
+      return { left, right }
+    }
+
+    /** Row index inside its own edge, so the two columns number independently. */
+    function rowOf(part, pin) {
+      const side = sideOf(part, pin)
+      let row = 0
+      for (const candidate of part.pins) {
+        if (candidate === pin) return row
+        if (sideOf(part, candidate) === side) row += 1
+      }
+      return 0
+    }
+
+    function rowCount(part) {
+      const counts = sideCounts(part)
+      return Math.max(counts.left, counts.right)
+    }
+
     function partHeight(part) {
-      return HEAD + PAD_TOP + part.pins.length * ROW + PAD_BOTTOM
+      return HEAD + PAD_TOP + rowCount(part) * ROW + PAD_BOTTOM
     }
 
-    function pinX(part) {
-      return part.kind === 'board' ? part.at[0] + PART_W : part.at[0]
+    function pinX(part, pin) {
+      return sideOf(part, pin) === 'right' ? part.at[0] + PART_W : part.at[0]
     }
 
-    function pinY(part, index) {
-      return part.at[1] + HEAD + PAD_TOP + index * ROW + ROW / 2
+    function pinY(part, row) {
+      return part.at[1] + HEAD + PAD_TOP + row * ROW + ROW / 2
     }
 
     function netEnds(doc) {
       const anchors = new Map()
       for (const part of doc.parts) {
-        for (const [index, pin] of part.pins.entries()) {
-          anchors.set(`${part.id}:${pin.name}`, { x: pinX(part), y: pinY(part, index) })
+        for (const pin of part.pins) {
+          anchors.set(`${part.id}:${pin.name}`, { x: pinX(part, pin), y: pinY(part, rowOf(part, pin)) })
         }
       }
       return anchors
@@ -272,7 +309,7 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, onRemove, onClose }) {
+    function PartInspector({ part, onRemove, onVerify, onClose }) {
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
           h('span', {}, part.label),
@@ -281,13 +318,22 @@ window.__ModuleLoader__.load({
           h('code', {}, part.id),
           h('span', { className: 'ew-badge' }, part.kind === 'board' ? '板卡' : '模块')),
         h('div', { className: 'ew-node' }, h('span', {}, '型号'), h('code', {}, part.model)),
+        part.source === undefined ? null : h('div', { className: 'ew-node' },
+          h('span', {}, '来源'),
+          h('span', { className: 'ew-badge' }, part.source === 'photo'
+            ? (part.verified === true ? '照片识别 · 已核对' : '照片识别 · 待核对')
+            : '手工添加')),
         part.note === undefined ? null : h('div', {
           style: { fontSize: '10.5px', color: 'var(--dsw-alias-label-secondary,#5c6068)', margin: '6px 0' },
         }, part.note),
         h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}`),
         part.pins.map(pin => h('div', { className: 'ew-node', key: pin.name },
           h('code', {}, pin.name),
-          h('span', { className: 'ew-badge' }, pin.role + (Number.isFinite(pin.volt) ? ` ${pin.volt}V` : '')))),
+          h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''} · ${pin.side === 'right' ? '右' : '左'}`))),
+        part.source === 'photo' && part.verified !== true
+          ? h('div', { style: { marginTop: '10px' } },
+            h(Button, { onClick: onVerify }, '标记引脚已核对'))
+          : null,
         h('div', { style: { marginTop: '10px' } },
           h(Button, { className: 'ew-btn-danger', onClick: onRemove }, '删除部件')))
     }
@@ -570,7 +616,9 @@ window.__ModuleLoader__.load({
             setPalette(false)
             return
           }
-          if (event.key !== 'Delete' && event.key !== 'Backspace') return
+          // Only Delete removes a wire: Backspace is a habit key, and a selected
+          // net disappearing because someone hit it is a nasty surprise.
+          if (event.key !== 'Delete') return
           const current = stateRef.current.doc
           if (selected?.type !== 'net' || current === undefined) return
           if (!current.nets.some(net => net.id === selected.id)) return
@@ -638,6 +686,7 @@ window.__ModuleLoader__.load({
         void save([{ type: 'remove_part', id }], '已删除部件')
         setSelected(undefined)
       }
+      const verifyPart = id => { void save([{ type: 'update_part', id, patch: { verified: true } }], '已标记引脚已核对') }
       const addPart = model => {
         setPalette(false)
         void save([{ type: 'add_part', part: { model } }], '已添加部件')
@@ -752,22 +801,28 @@ window.__ModuleLoader__.load({
       })
 
       const partEls = renderedParts.map(part => {
-        const isBoard = part.kind === 'board'
-        const rows = part.pins.map((pin, index) => h('div', {
-          key: pin.name,
-          className: 'ew-pin',
-          'data-node': `${part.id}:${pin.name}`,
-          'data-side': isBoard ? 'right' : 'left',
-          'data-role': pin.role,
-          style: { top: `${PAD_TOP + index * ROW}px` },
-          title: pin.note ?? '',
-        },
-        h('span', { className: 'ew-pin-name' }, pin.name),
-        isBoard && pin.note !== undefined ? h('span', { className: 'ew-pin-note' }, pin.note) : null,
-        h('span', {
-          className: 'ew-pin-dot',
-          onPointerDown: event => startWire(event, `${part.id}:${pin.name}`),
-        })))
+        const counts = sideCounts(part)
+        const rows = part.pins.map(pin => {
+          const side = sideOf(part, pin)
+          const wide = side === 'left' ? counts.right === 0 : counts.left === 0
+          return h('div', {
+            key: pin.name,
+            className: 'ew-pin',
+            'data-node': `${part.id}:${pin.name}`,
+            'data-side': side,
+            'data-wide': wide,
+            'data-role': pin.role,
+            style: { top: `${PAD_TOP + rowOf(part, pin) * ROW}px` },
+            title: pin.note ?? '',
+          },
+          h('span', { className: 'ew-pin-name' }, pin.name),
+          wide && pin.note !== undefined ? h('span', { className: 'ew-pin-note' }, pin.note) : null,
+          h('span', {
+            className: 'ew-pin-dot',
+            onPointerDown: event => startWire(event, `${part.id}:${pin.name}`),
+          }))
+        })
+        const photo = part.source === 'photo'
         return h('div', {
           key: part.id,
           className: 'ew-part',
@@ -777,6 +832,13 @@ window.__ModuleLoader__.load({
         },
         h('div', { className: 'ew-part-head', onPointerDown: event => startPartDrag(event, part) },
           h('span', { className: 'ew-part-label', title: part.label }, part.label),
+          photo
+            ? h('span', {
+              className: 'ew-flag',
+              'data-ok': part.verified === true,
+              title: part.verified === true ? '照片识别的引脚已核对' : '引脚来自照片识别，尚未核对',
+            }, part.verified === true ? '照片✓' : '照片?')
+            : null,
           h('span', { className: 'ew-part-id' }, part.id)),
         h('div', { style: { position: 'relative', height: `${partHeight(part) - HEAD}px` } }, rows))
       })
@@ -819,6 +881,7 @@ window.__ModuleLoader__.load({
             key: selectedPart.id,
             part: selectedPart,
             onRemove: () => removePart(selectedPart.id),
+            onVerify: () => verifyPart(selectedPart.id),
             onClose: () => setSelected(undefined),
           })
           : null

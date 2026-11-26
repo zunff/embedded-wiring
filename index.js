@@ -466,7 +466,7 @@ export function apply(ctx, config) {
       'Use action "read" before discussing pins, power, or code generation: it returns parts, nets, unconnected pins, and diagnostics.',
       'Nodes are "partId:pinName", for example "mcu:GPIO4" or "dht:DATA".',
       'The ESP32 board model is "esp32-devkitc"; module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
-      'For a part recognized from a photo or datasheet, call add_part with an explicit "pins" array instead of a model.',
+      'When the user sends a photo of a module: identify it, then call add_part with an explicit "pins" array (name, role, volt, maxVolt, side) and part.source "photo"; keep it unverified until the user confirms the pin order on the wiring page, and say what you assumed.',
       'Changes that the user should see and confirm first go through action "propose" with the same ops; the user applies them on the wiring page, or you call "apply_pending" when they say so.',
       'Electrical problems do not block a write: they come back as diagnostics with severity error/warning.',
     ].join(' '),
@@ -503,7 +503,7 @@ export function apply(ctx, config) {
         part: {
           type: 'object',
           additionalProperties: true,
-          description: 'add_part: { id?, model?, label?, pins?, note? }. pins is [{ name, role, volt?, maxVolt? }] for a custom part.',
+          description: 'add_part: { id?, model?, label?, pins?, source?, verified?, note? }. pins is [{ name, role, side?, volt?, maxVolt?, note? }] for a custom or photo-recognized part; side is "left" or "right" and defaults to left for modules, right for boards. source "photo" marks pins the user should confirm.',
         },
         id: {
           type: 'string',
@@ -512,7 +512,7 @@ export function apply(ctx, config) {
         patch: {
           type: 'object',
           additionalProperties: true,
-          description: 'update_part/set_net/set_meta: fields to change.',
+          description: 'update_part: { label?, note?, at?, pins?, source?, verified? } — set verified true once the user confirms photo-recognized pins. set_net: { name?, kind?, volt?, protocol?, attrs?, color?, nodes? }. set_meta: { title?, board?, note? }.',
         },
         at: {
           type: 'array',

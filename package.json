@@ -1,6 +1,6 @@
 {
   "name": "@local/embedded-wiring",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Hardware wiring netlist for embedded development: a draggable diagram the agent can read, validate, and change.",
