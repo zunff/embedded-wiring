@@ -135,13 +135,60 @@ window.__ModuleLoader__.load({
 
     // ---- Geometry -----------------------------------------------------------
 
+    /** Pin edge as the template declares it, before any mirroring. */
+    function templateSide(part, pin) {
+      if (pin.side === 'left' || pin.side === 'right') return pin.side
+      return part.kind === 'board' ? 'right' : 'left'
+    }
+
     /** Which edge a pin sits on; `flip` mirrors the symbol left to right. */
     function sideOf(part, pin) {
-      const side = pin.side === 'left' || pin.side === 'right'
-        ? pin.side
-        : (part.kind === 'board' ? 'right' : 'left')
+      const side = templateSide(part, pin)
       if (part.flip !== true) return side
       return side === 'left' ? 'right' : 'left'
+    }
+
+    /**
+     * A module turns its pins towards the parts it is wired to: when they sit
+     * past the middle of its own card, the symbol is mirrored. This is what
+     * keeps a module dropped on the left of the board from routing every wire
+     * around its card. Boards keep their official layout (J1 left, J3 right),
+     * and an explicit `flip` on the part wins over this guess.
+     */
+    function autoMirrors(parts, nets) {
+      const byId = new Map(parts.map(part => [part.id, part]))
+      const neighbours = new Map()
+      for (const net of nets) {
+        const owners = net.nodes.map(node => node.split(':')[0])
+        for (const owner of owners) {
+          for (const other of owners) {
+            if (other === owner) continue
+            const part = byId.get(other)
+            if (part === undefined) continue
+            const list = neighbours.get(owner) ?? []
+            list.push(part.at[0] + PART_W / 2)
+            neighbours.set(owner, list)
+          }
+        }
+      }
+      const mirrors = new Map()
+      for (const part of parts) {
+        if (part.kind === 'board') continue
+        if (part.pins.length === 0) continue
+        const list = neighbours.get(part.id)
+        if (list === undefined) continue
+        const target = list.reduce((sum, value) => sum + value, 0) / list.length
+        const pinsLeft = templateSide(part, part.pins[0]) === 'left'
+        const middle = part.at[0] + PART_W / 2
+        mirrors.set(part.id, pinsLeft ? target > middle : target < middle)
+      }
+      return mirrors
+    }
+
+    /** A part as drawn: the mirror decision folded into its `flip` field. */
+    function oriented(part, mirrors) {
+      const flip = part.flip === undefined ? mirrors.get(part.id) === true : part.flip === true
+      return { ...part, flip }
     }
 
     function sideCounts(part) {
@@ -459,7 +506,8 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, onRemove, onVerify, onFlip, onClose }) {
+    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onClose }) {
+      const mode = part.flip === undefined ? (flipped ? '自动 · 朝右' : '自动 · 朝左') : (flipped ? '已翻转' : '不翻转')
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
           h('span', {}, part.label),
@@ -470,7 +518,10 @@ window.__ModuleLoader__.load({
         h('div', { className: 'ew-node' }, h('span', {}, '型号'), h('code', {}, part.model)),
         h('div', { className: 'ew-node' },
           h('span', {}, '引脚朝向'),
-          h('button', { type: 'button', className: 'ew-btn', onClick: onFlip }, part.flip === true ? '⇋ 已翻转' : '⇋ 左右翻转')),
+          h('span', { className: 'ew-badge' }, mode)),
+        h('div', { style: { display: 'flex', gap: '6px', margin: '4px 0 8px' } },
+          h(Button, { onClick: onFlip }, '⇋ 翻转'),
+          part.flip === undefined ? null : h(Button, { onClick: onAuto }, '↺ 自动')),
         part.source === undefined ? null : h('div', { className: 'ew-node' },
           h('span', {}, '来源'),
           h('span', { className: 'ew-badge' }, part.source === 'photo'
@@ -848,9 +899,13 @@ window.__ModuleLoader__.load({
       }, [selected, save])
 
       const doc = state.doc
+      // Modules turn their pins towards what they are wired to (see autoMirrors).
+      const mirrors = autoMirrors(doc?.parts ?? [], doc?.nets ?? [])
       const renderedParts = doc === undefined
         ? []
-        : doc.parts.map(part => (drag?.kind === 'part' && drag.id === part.id ? { ...part, at: drag.at } : part))
+        : doc.parts
+          .map(part => oriented(part, mirrors))
+          .map(part => (drag?.kind === 'part' && drag.id === part.id ? { ...part, at: drag.at } : part))
       // Wires follow the part being dragged because anchors come from the
       // rendered positions, not the saved ones.
       const { anchors, cards } = scene(renderedParts)
@@ -909,10 +964,14 @@ window.__ModuleLoader__.load({
         setSelected(undefined)
       }
       const verifyPart = id => { void save([{ type: 'update_part', id, patch: { verified: true } }], '已标记引脚已核对') }
-      const flipPart = id => {
-        const part = doc?.parts.find(candidate => candidate.id === id)
-        const flip = part?.flip !== true
-        void save([{ type: 'flip', id, flip }], flip ? '已左右翻转' : '已恢复引脚朝向')
+      const setFlip = (id, flip) => {
+        void save([{ type: 'flip', id, flip }], flip === null ? '已恢复自动朝向' : flip ? '已左右翻转' : '已固定朝向')
+      }
+      // Clicking always flips what is on screen, whether that came from `flip`
+      // or from the automatic guess.
+      const flipPart = part => {
+        const shown = part.flip === undefined ? mirrors.get(part.id) === true : part.flip === true
+        setFlip(part.id, !shown)
       }
       const addPart = model => {
         setPalette(false)
@@ -1140,9 +1199,11 @@ window.__ModuleLoader__.load({
           ? h(PartInspector, {
             key: selectedPart.id,
             part: selectedPart,
+            flipped: (selectedPart.flip === undefined ? mirrors.get(selectedPart.id) === true : selectedPart.flip === true),
             onRemove: () => removePart(selectedPart.id),
             onVerify: () => verifyPart(selectedPart.id),
-            onFlip: () => flipPart(selectedPart.id),
+            onFlip: () => flipPart(selectedPart),
+            onAuto: () => setFlip(selectedPart.id, null),
             onClose: () => setSelected(undefined),
           })
           : null
@@ -1258,7 +1319,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
-      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard },
+      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))

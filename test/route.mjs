@@ -36,7 +36,7 @@ function require(id) {
 
 await import('../client.js')
 assert.ok(captured.module !== undefined, 'the bundle registered itself')
-const { scene, planWire, pathOf, wirePath, crossesCard } = captured.module.internals
+const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented } = captured.module.internals
 
 const board = {
   id: 'mcu',
@@ -147,6 +147,31 @@ function segments(points) {
   const facing = scene([board, { ...buzzer, at: [-27, 389] }])
   const wrapped = planWire(facing.anchors.get('mcu:3V3'), facing.anchors.get('buzzer:VCC'), facing.cards)
   assert.equal(wrapped.kind, 'ortho')
+}
+
+// 7. Orientation is guessed from the wiring: a module turns its pins towards
+//    the parts it talks to, and an explicit flip wins over the guess.
+{
+  const left = { ...buzzer, at: [-27, 389] }
+  const nets = [
+    { nodes: ['mcu:3V3', 'buzzer:VCC'] },
+    { nodes: ['mcu:GND', 'buzzer:GND'] },
+  ]
+  assert.equal(autoMirrors([board, left], nets).get('buzzer'), true)
+  assert.equal(autoMirrors([board, { ...buzzer, at: [646, 385] }], nets).get('buzzer'), false)
+  assert.equal(autoMirrors([board, left], []).has('buzzer'), false, 'an unwired module keeps its template orientation')
+  assert.equal(autoMirrors([board, left], nets).has('mcu'), false, 'boards keep their official layout')
+
+  const guessed = autoMirrors([board, left], nets)
+  assert.equal(oriented(left, guessed).flip, true)
+  assert.equal(oriented({ ...left, flip: false }, guessed).flip, false, 'explicit wins')
+  assert.equal(oriented({ ...left, flip: true }, new Map()).flip, true)
+
+  // The guess is what makes the wrap disappear: same document, one flip.
+  const unflipped = scene([board, oriented({ ...left, flip: false }, guessed)])
+  const flipped = scene([board, oriented(left, guessed)])
+  assert.equal(planWire(unflipped.anchors.get('mcu:3V3'), unflipped.anchors.get('buzzer:VCC'), unflipped.cards).kind, 'ortho')
+  assert.equal(planWire(flipped.anchors.get('mcu:3V3'), flipped.anchors.get('buzzer:VCC'), flipped.cards).kind, 'curve')
 }
 
 console.log('route: ok')

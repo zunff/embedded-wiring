@@ -525,7 +525,7 @@ export function apply(ctx, config) {
       case 'move':
         return [{ type: 'move', id: args.id, at: args.at }]
       case 'flip':
-        return [{ type: 'flip', id: args.id, flip: args.flip !== false }]
+        return [{ type: 'flip', id: args.id, flip: args.flipAuto === true ? null : args.flip !== false }]
       case 'set_meta':
         return [{ type: 'set_meta', patch: args.patch }]
       case 'propose':
@@ -547,7 +547,7 @@ export function apply(ctx, config) {
       'Use action "read" before discussing pins, power, or code generation: it returns parts, nets, unconnected pins, and diagnostics.',
       'Nodes are "partId:pinName", for example "mcu:GPIO4" or "dht:DATA".',
       'Board models: esp32-devkitc, esp32-c3-devkitc-02, esp32-c3-devkitm-1, esp32-c3-supermini, esp32-s3-devkitc-1. Module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
-      'Action "flip" mirrors a part so its pins face the other edge; it is layout only and every wire stays attached. Suggest it when the diagram looks tangled because a module sits on the side its pins do not face.',
+      'Action "flip" mirrors a part so its pins face the other edge; it is layout only and every wire stays attached. The page already orients a module towards the parts it is wired to, so use flip only to override that guess (or flipAuto: true to clear the override).',
       'When the user sends a photo of a module: identify it, then call add_part with an explicit "pins" array (name, role, volt, maxVolt, side) and part.source "photo"; keep it unverified until the user confirms the pin order on the wiring page, and say what you assumed.',
       'Changes that the user should see and confirm first go through action "propose" with the same ops; the user applies them on the wiring page, or you call "apply_pending" when they say so.',
       'Electrical problems do not block a write: they come back as diagnostics with severity error/warning.',
@@ -593,7 +593,11 @@ export function apply(ctx, config) {
         },
         flip: {
           type: 'boolean',
-          description: 'flip: true mirrors the part (default); false restores its template orientation. Layout only.',
+          description: 'flip: true mirrors the part (default), false keeps the template orientation. Layout only.',
+        },
+        flipAuto: {
+          type: 'boolean',
+          description: 'flip: true clears the override so the page orients the part from where its neighbours are.',
         },
         patch: {
           type: 'object',

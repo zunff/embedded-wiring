@@ -288,8 +288,12 @@ function codes(diagnostics) {
   assert.equal(flipped.parts.find(part => part.id === 'dht').flip, true)
   assert.deepEqual(flipped.nets, doc.nets)
   assert.equal(normalizeDocument(JSON.parse(JSON.stringify(flipped))).parts.find(part => part.id === 'dht').flip, true)
-  const restored = applyOps(flipped, [{ type: 'flip', id: 'dht', flip: false }])
-  assert.equal(restored.parts.find(part => part.id === 'dht').flip, undefined)
+  // `flip: false` is a real value (pin orientation locked), `null` goes back to auto.
+  const locked = applyOps(flipped, [{ type: 'flip', id: 'dht', flip: false }])
+  assert.equal(locked.parts.find(part => part.id === 'dht').flip, false)
+  assert.equal(normalizeDocument(JSON.parse(JSON.stringify(locked))).parts.find(part => part.id === 'dht').flip, false)
+  const auto = applyOps(locked, [{ type: 'flip', id: 'dht', flip: null }])
+  assert.equal(auto.parts.find(part => part.id === 'dht').flip, undefined)
   assert.throws(() => applyOps(doc, [{ type: 'flip', id: 'nope' }]), /未知部件/)
 }
 
