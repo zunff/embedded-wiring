@@ -4,7 +4,7 @@
 
 ## 用起来是什么样
 
-板卡按实物画：ESP32 的引脚分成左右两列，左边 3V3/EN/GPIO36… 到底部 GND，右边 5V/GND/GPIO15… 到底部 GPIO23，跟手里那块板对照着看就行。
+板卡按实物画：引脚分成左右两列，顺序就是板子上的上下顺序。ESP32-DevKitC V4 左边 3V3/EN/GPIO36… 到 5V，右边 GND/GPIO23… 到 GPIO6（含 6 个接内部 flash 的脚）；常见 30 脚兼容板则是 15+15，没有那 6 个脚。
 
 - 拖部件标题 = 挪位置（只改布局，不改语义）
 - 从一个引脚圆点拖到另一个引脚 = 连一条网络
@@ -71,7 +71,8 @@
 
 | 型号 | 引脚 | 来源 |
 |---|---|---|
-| `esp32-devkitc` | 30（左 15 / 右 15） | 经典 DevKitC 30 脚 |
+| `esp32-devkitc` | 38（19 / 19） | Espressif DevKitC V4 J2/J3 表 |
+| `esp32-devkitc-30` | 30（15 / 15） | 常见 30 脚兼容板（省掉 flash 脚） |
 | `esp32-c3-devkitc-02` | 30（15 / 15） | Espressif J1/J3 表 |
 | `esp32-c3-devkitm-1` | 30（15 / 15） | Espressif J1/J3 表 |
 | `esp32-c3-supermini` | 16（8 / 8） | 常见 16 脚丝印 |

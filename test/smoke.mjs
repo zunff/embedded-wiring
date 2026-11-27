@@ -50,12 +50,12 @@ function codes(diagnostics) {
   const doc = board()
   const left = doc.parts[0].pins.filter(pin => pin.side === 'left')
   const right = doc.parts[0].pins.filter(pin => pin.side === 'right')
-  assert.equal(left.length, 15)
-  assert.equal(right.length, 15)
+  assert.equal(left.length, 19)
+  assert.equal(right.length, 19)
   assert.deepEqual(left.slice(0, 2).map(pin => pin.name), ['3V3', 'EN'])
-  assert.equal(left[left.length - 1].name, 'GND')
-  assert.equal(right[0].name, '5V')
-  assert.equal(right[right.length - 1].name, 'GPIO23')
+  assert.equal(left[left.length - 1].name, '5V')
+  assert.equal(right[0].name, 'GND2')
+  assert.equal(right[right.length - 1].name, 'GPIO6')
 }
 
 // 1c. A file written before edges existed gains them from the library, in the
@@ -81,7 +81,7 @@ function codes(diagnostics) {
   }
   const doc = normalizeDocument(legacy)
   const pins = doc.parts[0].pins
-  assert.deepEqual(pins.map(pin => [pin.name, pin.side]), [['3V3', 'left'], ['5V', 'right'], ['GPIO4', 'right']])
+  assert.deepEqual(pins.map(pin => [pin.name, pin.side]), [['3V3', 'left'], ['5V', 'left'], ['GPIO4', 'right']])
 }
 
 // 1d. A photo-recognized part stays flagged until it is verified.
@@ -112,7 +112,8 @@ function codes(diagnostics) {
 //     standalone validation (no accidental duplicate GND rows).
 {
   const boards = [
-    ['esp32-devkitc', 30, 15, 15],
+    ['esp32-devkitc', 38, 19, 19],
+    ['esp32-devkitc-30', 30, 15, 15],
     ['esp32-c3-devkitc-02', 30, 15, 15],
     ['esp32-c3-devkitm-1', 30, 15, 15],
     ['esp32-c3-supermini', 16, 8, 8],

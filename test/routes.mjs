@@ -192,7 +192,7 @@ try {
   const tool = tools.find(candidate => candidate.name === 'hardware_map')
   assert.ok(tool !== undefined, 'hardware_map must be registered')
   const read = await tool.execute({ action: 'read' }, { agent: {}, signal })
-  assert.match(read.text, /ESP32 DevKitC/)
+  assert.match(read.text, /ESP32-DevKitC V4/)
   assert.match(read.text, /dht:DATA/)
   const moved = await tool.execute({ action: 'move', id: 'dht', at: [420, 120] }, { agent: {}, signal })
   assert.match(moved.text, /已写入/)
