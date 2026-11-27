@@ -76,6 +76,8 @@ window.__ModuleLoader__.load({
 .ew-pin-dot:hover{transform:scale(1.4);border-color:var(--dsw-alias-brand-primary,#4c8dff);background:var(--dsw-alias-brand-primary,#4c8dff)}
 .ew-pin[data-side=left] .ew-pin-dot{left:-5px}
 .ew-pin[data-side=right] .ew-pin-dot{right:-5px}
+.ew-pin[data-used][data-side=left] .ew-pin-dot{left:-6px;width:11px;height:11px}
+.ew-pin[data-used][data-side=right] .ew-pin-dot{right:-6px;width:11px;height:11px}
 .ew-panel{position:absolute;top:10px;right:10px;width:258px;max-height:calc(100% - 20px);overflow:auto;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(20,22,30,.16));border-radius:10px;box-shadow:0 8px 24px rgba(10,12,20,.14);padding:10px;z-index:6}
 .ew-panel-title{display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:600;font-size:11.5px;margin-bottom:8px}
 .ew-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
