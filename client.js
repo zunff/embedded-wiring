@@ -66,6 +66,7 @@ window.__ModuleLoader__.load({
 .ew-pin[data-side=right]{right:0;justify-content:flex-end}
 .ew-pin[data-wide=true]{width:100%}
 .ew-pin-name{overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+.ew-used{color:var(--dsw-alias-label-primary,#17181c);font-weight:500}
 .ew-pin[data-role=power] .ew-pin-name{color:var(--dsw-alias-state-error-primary,#e03131)}
 .ew-pin[data-role=ground] .ew-pin-name{color:var(--dsw-alias-label-tertiary,#8b909a)}
 .ew-pin-note{font-size:9.5px;color:var(--dsw-alias-label-tertiary,#a0a5ad);overflow:hidden;text-overflow:ellipsis;flex:0 1 auto;min-width:0;margin-left:auto;text-align:right}
@@ -176,26 +177,166 @@ window.__ModuleLoader__.load({
       return part.at[1] + HEAD + PAD_TOP + row * ROW + ROW / 2
     }
 
-    function netEnds(doc) {
+    /** Pin anchors plus the card rectangles a wire has to stay out of. */
+    function scene(parts) {
       const anchors = new Map()
-      for (const part of doc.parts) {
+      const cards = []
+      for (const part of parts) {
+        cards.push({ x: part.at[0], y: part.at[1], w: PART_W, h: partHeight(part) })
         for (const pin of part.pins) {
-          anchors.set(`${part.id}:${pin.name}`, { x: pinX(part, pin), y: pinY(part, rowOf(part, pin)) })
+          anchors.set(`${part.id}:${pin.name}`, {
+            x: pinX(part, pin),
+            y: pinY(part, rowOf(part, pin)),
+            side: sideOf(part, pin),
+          })
         }
       }
-      return anchors
+      return { anchors, cards }
     }
 
-    function curve(from, to) {
+    // ---- Routing ------------------------------------------------------------
+    // Layout is this file's business, so the wire router lives here too. Two
+    // rules: a wire leaves and enters a pin sideways, and it never runs under a
+    // card (an SVG wire below an opaque card just disappears). When a card sits
+    // between the two pins the wire takes an orthogonal detour around it.
+
+    const STUB = 18
+    const GAP = 14
+    const CORNER = 8
+    const EDGE_PAD = 1.5
+
+    const outward = side => (side === 'right' ? 1 : -1)
+    const near = (left, right) => Math.abs(left - right) < 0.01
+    const num = value => Math.round(value * 10) / 10
+
+    function insideCard(x, y, card) {
+      return x > card.x + EDGE_PAD && x < card.x + card.w - EDGE_PAD
+        && y > card.y + EDGE_PAD && y < card.y + card.h - EDGE_PAD
+    }
+
+    /** Axis-aligned segments only: touching a card edge is allowed, entering is not. */
+    function crossesCard(from, to, card) {
+      if (near(from.y, to.y)) {
+        if (from.y <= card.y + EDGE_PAD || from.y >= card.y + card.h - EDGE_PAD) return false
+        return Math.max(from.x, to.x) > card.x + EDGE_PAD && Math.min(from.x, to.x) < card.x + card.w - EDGE_PAD
+      }
+      if (near(from.x, to.x)) {
+        if (from.x <= card.x + EDGE_PAD || from.x >= card.x + card.w - EDGE_PAD) return false
+        return Math.max(from.y, to.y) > card.y + EDGE_PAD && Math.min(from.y, to.y) < card.y + card.h - EDGE_PAD
+      }
+      return false
+    }
+
+    function blockages(points, cards) {
+      let count = 0
+      for (let index = 0; index + 1 < points.length; index += 1) {
+        for (const card of cards) {
+          if (crossesCard(points[index], points[index + 1], card)) count += 1
+        }
+      }
+      return count
+    }
+
+    function walkLength(points) {
+      let total = 0
+      for (let index = 0; index + 1 < points.length; index += 1) {
+        total += Math.abs(points[index].x - points[index + 1].x) + Math.abs(points[index].y - points[index + 1].y)
+      }
+      return total
+    }
+
+    function simplify(points) {
+      const out = []
+      for (const point of points) {
+        const last = out[out.length - 1]
+        if (last !== undefined && near(last.x, point.x) && near(last.y, point.y)) continue
+        out.push(point)
+      }
+      for (let index = out.length - 2; index >= 1; index -= 1) {
+        const prev = out[index - 1]
+        const corner = out[index]
+        const next = out[index + 1]
+        const flat = (near(prev.y, corner.y) && near(corner.y, next.y))
+          || (near(prev.x, corner.x) && near(corner.x, next.x))
+        if (flat) out.splice(index, 1)
+      }
+      return out
+    }
+
+    function curveClear(from, to, cards) {
       const mid = (from.x + to.x) / 2
-      return `M ${from.x} ${from.y} C ${mid} ${from.y}, ${mid} ${to.y}, ${to.x} ${to.y}`
+      for (let step = 1; step < 12; step += 1) {
+        const t = step / 12
+        const u = 1 - t
+        const x = u * u * u * from.x + 3 * u * u * t * mid + 3 * u * t * t * mid + t * t * t * to.x
+        const y = u * u * u * from.y + 3 * u * u * t * from.y + 3 * u * t * t * to.y + t * t * t * to.y
+        for (const card of cards) if (insideCard(x, y, card)) return false
+      }
+      return true
     }
 
-    function wirePath(anchors, net) {
+    function planWire(from, to, cards, offset = 0) {
+      if (curveClear(from, to, cards)) return { kind: 'curve', from, to }
+      const a1 = { x: from.x + outward(from.side) * STUB, y: from.y }
+      const b1 = { x: to.x + outward(to.side) * STUB, y: to.y }
+      const left = Math.min(a1.x, b1.x)
+      const right = Math.max(a1.x, b1.x)
+      const band = cards.filter(card => card.x + card.w > left - 0.5 && card.x < right + 0.5)
+      const top = band.length === 0 ? Math.min(from.y, to.y) : Math.min(...band.map(card => card.y))
+      const bottom = band.length === 0 ? Math.max(from.y, to.y) : Math.max(...band.map(card => card.y + card.h))
+      const outerTop = Math.min(top, ...cards.map(card => card.y))
+      const outerBottom = Math.max(bottom, ...cards.map(card => card.y + card.h))
+      // Nets that share a channel are staggered so their runs stay readable.
+      const stagger = Math.min(offset, 3) * 6
+      const lanes = [
+        top - GAP - stagger,
+        bottom + GAP + stagger,
+        outerTop - GAP - stagger,
+        outerBottom + GAP + stagger,
+      ]
+      let best
+      for (const lane of lanes) {
+        const points = simplify([from, a1, { x: a1.x, y: lane }, { x: b1.x, y: lane }, b1, to])
+        const score = blockages(points, cards) * 1e6 + walkLength(points)
+        if (best === undefined || score < best.score) best = { points, score }
+      }
+      return { kind: 'ortho', points: best.points }
+    }
+
+    function pathOf(plan) {
+      if (plan.kind === 'curve') {
+        const mid = (plan.from.x + plan.to.x) / 2
+        return `M ${num(plan.from.x)} ${num(plan.from.y)} C ${num(mid)} ${num(plan.from.y)}, ${num(mid)} ${num(plan.to.y)}, ${num(plan.to.x)} ${num(plan.to.y)}`
+      }
+      const points = plan.points
+      if (points.length < 2) return ''
+      let d = `M ${num(points[0].x)} ${num(points[0].y)}`
+      for (let index = 1; index < points.length - 1; index += 1) {
+        const prev = points[index - 1]
+        const corner = points[index]
+        const next = points[index + 1]
+        const inLength = Math.abs(corner.x - prev.x) + Math.abs(corner.y - prev.y)
+        const outLength = Math.abs(next.x - corner.x) + Math.abs(next.y - corner.y)
+        const radius = Math.min(CORNER, inLength / 2, outLength / 2)
+        if (radius < 0.5) {
+          d += ` L ${num(corner.x)} ${num(corner.y)}`
+          continue
+        }
+        const enterX = corner.x - ((corner.x - prev.x) / inLength) * radius
+        const enterY = corner.y - ((corner.y - prev.y) / inLength) * radius
+        const leaveX = corner.x + ((next.x - corner.x) / outLength) * radius
+        const leaveY = corner.y + ((next.y - corner.y) / outLength) * radius
+        d += ` L ${num(enterX)} ${num(enterY)} Q ${num(corner.x)} ${num(corner.y)} ${num(leaveX)} ${num(leaveY)}`
+      }
+      const last = points[points.length - 1]
+      return `${d} L ${num(last.x)} ${num(last.y)}`
+    }
+
+    function wirePath(anchors, net, cards, offset = 0) {
       const points = net.nodes.map(node => anchors.get(node)).filter(Boolean)
       if (points.length < 2) return ''
       const [head, ...rest] = points
-      return rest.map(point => curve(head, point)).join(' ')
+      return rest.map(point => pathOf(planWire(head, point, cards, offset))).join(' ')
     }
 
     function contentBounds(doc) {
@@ -701,7 +842,12 @@ window.__ModuleLoader__.load({
         : doc.parts.map(part => (drag?.kind === 'part' && drag.id === part.id ? { ...part, at: drag.at } : part))
       // Wires follow the part being dragged because anchors come from the
       // rendered positions, not the saved ones.
-      const anchors = netEnds({ parts: renderedParts })
+      const { anchors, cards } = scene(renderedParts)
+      // A pin that a net already reaches is drawn filled with that net's colour.
+      const usedBy = new Map()
+      for (const net of doc?.nets ?? []) {
+        for (const node of net.nodes) if (!usedBy.has(node)) usedBy.set(node, net)
+      }
 
       const startPartDrag = (event, part) => {
         if (event.button !== 0) return
@@ -831,8 +977,8 @@ window.__ModuleLoader__.load({
 
       const wireEls = []
       if (doc !== undefined) {
-        for (const net of doc.nets) {
-          const d = wirePath(anchors, net)
+        for (const [index, net] of doc.nets.entries()) {
+          const d = wirePath(anchors, net, cards, index)
           if (d === '') continue
           wireEls.push(h('path', {
             key: net.id,
@@ -854,7 +1000,7 @@ window.__ModuleLoader__.load({
             wireEls.push(h('path', {
               key: `${item.id}-${index}`,
               className: 'ew-wire',
-              d: rest.map(point => curve(head, point)).join(' '),
+              d: rest.map(point => pathOf(planWire(head, point, cards))).join(' '),
               stroke: 'var(--dsw-alias-brand-primary,#4c8dff)',
               strokeWidth: 2,
               strokeDasharray: '6 4',
@@ -878,21 +1024,33 @@ window.__ModuleLoader__.load({
         const rows = part.pins.map(pin => {
           const side = sideOf(part, pin)
           const wide = side === 'left' ? counts.right === 0 : counts.left === 0
+          const node = `${part.id}:${pin.name}`
+          const net = usedBy.get(node)
+          const color = net === undefined ? undefined : net.color ?? NET_COLORS[net.kind] ?? NET_COLORS.signal
+          const title = [pin.note, net === undefined ? undefined : `已接 ${net.name ?? net.id}`]
+            .filter(value => value !== undefined && value !== '')
+            .join(' · ')
           return h('div', {
             key: pin.name,
             className: 'ew-pin',
-            'data-node': `${part.id}:${pin.name}`,
+            'data-node': node,
             'data-side': side,
             'data-wide': wide,
             'data-role': pin.role,
+            'data-used': net === undefined ? undefined : '',
             style: { top: `${PAD_TOP + rowOf(part, pin) * ROW}px` },
-            title: pin.note ?? '',
+            title,
           },
-          h('span', { className: 'ew-pin-name' }, pin.name),
+          h('span', { className: net === undefined ? 'ew-pin-name' : 'ew-pin-name ew-used' }, pin.name),
           wide && pin.note !== undefined ? h('span', { className: 'ew-pin-note' }, pin.note) : null,
           h('span', {
             className: 'ew-pin-dot',
-            onPointerDown: event => startWire(event, `${part.id}:${pin.name}`),
+            style: color === undefined ? undefined : {
+              background: color,
+              borderColor: color,
+              boxShadow: '0 0 0 2px var(--dsw-alias-bg-layer-1,#fff)',
+            },
+            onPointerDown: event => startWire(event, node),
           }))
         })
         const photo = part.source === 'photo'
@@ -1049,7 +1207,7 @@ window.__ModuleLoader__.load({
       doc === undefined ? emptyEl : world,
       pendingEl,
       inspectorEl,
-      h('div', { className: 'ew-hint' }, '拖标题移动 · 从引脚圆点拖到另一个引脚连线 · 点线编辑 · 滚轮缩放 · Delete 删线'))
+      h('div', { className: 'ew-hint' }, '拖标题移动 · 从引脚圆点拖到另一个引脚连线 · 实心圆点=已接线 · 点线编辑 · 滚轮缩放 · Delete 删线'))
 
       return h('div', { className: 'ew-root' },
         bar,
@@ -1082,6 +1240,8 @@ window.__ModuleLoader__.load({
 
     return {
       inject: ['slots'],
+      // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
+      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))
