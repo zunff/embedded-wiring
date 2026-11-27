@@ -280,6 +280,19 @@ function codes(diagnostics) {
   }
 }
 
+// 10. Flipping a part is layout only: the pins change edge, the wires stay.
+{
+  let doc = withPart(board(), 'dht22', 'dht')
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:DATA'] }])
+  const flipped = applyOps(doc, [{ type: 'flip', id: 'dht' }])
+  assert.equal(flipped.parts.find(part => part.id === 'dht').flip, true)
+  assert.deepEqual(flipped.nets, doc.nets)
+  assert.equal(normalizeDocument(JSON.parse(JSON.stringify(flipped))).parts.find(part => part.id === 'dht').flip, true)
+  const restored = applyOps(flipped, [{ type: 'flip', id: 'dht', flip: false }])
+  assert.equal(restored.parts.find(part => part.id === 'dht').flip, undefined)
+  assert.throws(() => applyOps(doc, [{ type: 'flip', id: 'nope' }]), /未知部件/)
+}
+
 function assertsPending(doc) {
   assert.equal(doc.pending[0].note, '把 DHT22 的数据线接到 GPIO4')
   assert.equal(doc.pending[0].ops[0].type, 'connect')

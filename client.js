@@ -135,10 +135,13 @@ window.__ModuleLoader__.load({
 
     // ---- Geometry -----------------------------------------------------------
 
-    /** Which edge a pin sits on; a missing side means the part's default edge. */
+    /** Which edge a pin sits on; `flip` mirrors the symbol left to right. */
     function sideOf(part, pin) {
-      if (pin.side === 'left' || pin.side === 'right') return pin.side
-      return part.kind === 'board' ? 'right' : 'left'
+      const side = pin.side === 'left' || pin.side === 'right'
+        ? pin.side
+        : (part.kind === 'board' ? 'right' : 'left')
+      if (part.flip !== true) return side
+      return side === 'left' ? 'right' : 'left'
     }
 
     function sideCounts(part) {
@@ -277,7 +280,7 @@ window.__ModuleLoader__.load({
       return true
     }
 
-    function planWire(from, to, cards, offset = 0) {
+    function planWire(from, to, cards, lane = 0) {
       if (curveClear(from, to, cards)) return { kind: 'curve', from, to }
       const a1 = { x: from.x + outward(from.side) * STUB, y: from.y }
       const b1 = { x: to.x + outward(to.side) * STUB, y: to.y }
@@ -288,17 +291,20 @@ window.__ModuleLoader__.load({
       const bottom = band.length === 0 ? Math.max(from.y, to.y) : Math.max(...band.map(card => card.y + card.h))
       const outerTop = Math.min(top, ...cards.map(card => card.y))
       const outerBottom = Math.max(bottom, ...cards.map(card => card.y + card.h))
-      // Nets that share a channel are staggered so their runs stay readable.
-      const stagger = Math.min(offset, 3) * 6
+      // Wires that end up in the same channel are stacked on their own tracks
+      // (further out and further along), so a bundle nests instead of overlapping.
+      const track = Math.min(Math.max(lane, 0), 4)
+      const shift = track * 6
       const lanes = [
-        top - GAP - stagger,
-        bottom + GAP + stagger,
-        outerTop - GAP - stagger,
-        outerBottom + GAP + stagger,
+        top - GAP - shift,
+        bottom + GAP + shift,
+        outerTop - GAP - shift,
+        outerBottom + GAP + shift,
       ]
+      const entryX = b1.x + outward(to.side) * shift
       let best
-      for (const lane of lanes) {
-        const points = simplify([from, a1, { x: a1.x, y: lane }, { x: b1.x, y: lane }, b1, to])
+      for (const y of lanes) {
+        const points = simplify([from, a1, { x: a1.x, y }, { x: entryX, y }, { x: entryX, y: to.y }, to])
         const score = blockages(points, cards) * 1e6 + walkLength(points)
         if (best === undefined || score < best.score) best = { points, score }
       }
@@ -453,7 +459,7 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, onRemove, onVerify, onClose }) {
+    function PartInspector({ part, onRemove, onVerify, onFlip, onClose }) {
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
           h('span', {}, part.label),
@@ -462,6 +468,9 @@ window.__ModuleLoader__.load({
           h('code', {}, part.id),
           h('span', { className: 'ew-badge' }, part.kind === 'board' ? '板卡' : '模块')),
         h('div', { className: 'ew-node' }, h('span', {}, '型号'), h('code', {}, part.model)),
+        h('div', { className: 'ew-node' },
+          h('span', {}, '引脚朝向'),
+          h('button', { type: 'button', className: 'ew-btn', onClick: onFlip }, part.flip === true ? '⇋ 已翻转' : '⇋ 左右翻转')),
         part.source === undefined ? null : h('div', { className: 'ew-node' },
           h('span', {}, '来源'),
           h('span', { className: 'ew-badge' }, part.source === 'photo'
@@ -473,7 +482,7 @@ window.__ModuleLoader__.load({
         h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}`),
         part.pins.map(pin => h('div', { className: 'ew-node', key: pin.name },
           h('code', {}, pin.name),
-          h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''} · ${pin.side === 'right' ? '右' : '左'}`))),
+          h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''} · ${sideOf(part, pin) === 'right' ? '右' : '左'}`))),
         part.source === 'photo' && part.verified !== true
           ? h('div', { style: { marginTop: '10px' } },
             h(Button, { onClick: onVerify }, '标记引脚已核对'))
@@ -900,6 +909,11 @@ window.__ModuleLoader__.load({
         setSelected(undefined)
       }
       const verifyPart = id => { void save([{ type: 'update_part', id, patch: { verified: true } }], '已标记引脚已核对') }
+      const flipPart = id => {
+        const part = doc?.parts.find(candidate => candidate.id === id)
+        const flip = part?.flip !== true
+        void save([{ type: 'flip', id, flip }], flip ? '已左右翻转' : '已恢复引脚朝向')
+      }
       const addPart = model => {
         setPalette(false)
         void save([{ type: 'add_part', part: { model } }], '已添加部件')
@@ -1128,6 +1142,7 @@ window.__ModuleLoader__.load({
             part: selectedPart,
             onRemove: () => removePart(selectedPart.id),
             onVerify: () => verifyPart(selectedPart.id),
+            onFlip: () => flipPart(selectedPart.id),
             onClose: () => setSelected(undefined),
           })
           : null

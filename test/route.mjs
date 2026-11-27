@@ -134,4 +134,19 @@ function segments(points) {
   assert.equal(wirePath(anchors, { nodes: ['mcu:3V3', 'nope:pin'] }, cards), '')
 }
 
+// 6. Mirroring the part puts its pins on the near edge, so the same wire turns
+//    into a short curve instead of a loop around the card.
+{
+  const mirrored = scene([board, { ...buzzer, at: [-27, 389], flip: true }])
+  const pin = mirrored.anchors.get('buzzer:VCC')
+  assert.equal(pin.side, 'right')
+  assert.equal(pin.x, -27 + 210)
+  const plan = planWire(mirrored.anchors.get('mcu:3V3'), pin, mirrored.cards)
+  assert.equal(plan.kind, 'curve')
+
+  const facing = scene([board, { ...buzzer, at: [-27, 389] }])
+  const wrapped = planWire(facing.anchors.get('mcu:3V3'), facing.anchors.get('buzzer:VCC'), facing.cards)
+  assert.equal(wrapped.kind, 'ortho')
+}
+
 console.log('route: ok')
