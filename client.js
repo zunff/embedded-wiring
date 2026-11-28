@@ -32,6 +32,9 @@ window.__ModuleLoader__.load({
     const STYLE_ATTR = 'data-ew-style'
     const STORAGE_WS = 'ew.workspace'
     const STORAGE_PROJECT = 'ew.project'
+    // Bumped whenever this file changes in a way the user must see: the page runs
+    // whatever bundle the browser loaded, which can be older than the Host.
+    const CLIENT_VERSION = '0.10.0'
 
     const CSS = `
 .ew-root{position:relative;display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;overflow:hidden;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary,#17181c);background:var(--dsw-alias-bg-layer-1,#fff);font-variant-numeric:tabular-nums}
@@ -1689,7 +1692,8 @@ window.__ModuleLoader__.load({
         message === '' ? null : h('span', { className: 'ew-status' }, message),
         h('span', { className: 'ew-badge', title: '这个工作区里识别到的项目与板卡数' }, `${projects.length} 项目 · ${workspace?.boards ?? 0} 板`),
         busy ? h('span', { className: 'ew-badge' }, '保存中…') : null,
-        doc === undefined ? null : h('span', { className: 'ew-badge', title: `文件 ${state.project?.path ?? ''}` }, `rev ${doc.rev}`))
+        doc === undefined ? null : h('span', { className: 'ew-badge', title: `文件 ${state.project?.path ?? ''}` }, `rev ${doc.rev}`),
+        h('span', { className: 'ew-badge', title: '页面代码版本；和插件版本不一致说明浏览器还在用旧缓存，刷新一次' }, `页面 v${CLIENT_VERSION}`))
 
       const errorEl = error === '' ? null : h('div', { className: 'ew-alert ew-alert-error' },
         h('span', { className: 'ew-grow' }, error),
