@@ -201,6 +201,44 @@ function codes(diagnostics) {
   assert.ok(found.includes('error:no-ground'), found.join(','))
 }
 
+// 3b. A board's GND pins are one copper pour: two modules grounded through
+//     different GND header pins are still common ground, while two islands are
+//     still an error.
+{
+  const mcu = {
+    id: 'mcu',
+    kind: 'board',
+    label: '开发板',
+    pins: [
+      { name: 'GND', role: 'ground' },
+      { name: 'GND2', role: 'ground' },
+      { name: 'GPIO4', role: 'bidir' },
+      { name: 'GPIO5', role: 'bidir' },
+    ],
+  }
+  const module = id => ({
+    id,
+    kind: 'module',
+    label: id,
+    pins: [{ name: 'GND', role: 'ground' }, { name: 'SIG', role: 'bidir' }],
+  })
+  const both = applyOps(normalizeDocument({ parts: [mcu, module('a'), module('b')], nets: [] }), [
+    { type: 'connect', nodes: ['mcu:GND', 'a:GND'] },
+    { type: 'connect', nodes: ['mcu:GND2', 'b:GND'] },
+    { type: 'connect', nodes: ['a:SIG', 'mcu:GPIO4'] },
+    { type: 'connect', nodes: ['b:SIG', 'mcu:GPIO5'] },
+  ])
+  assert.deepEqual(codes(validate(both)).filter(code => code.includes('ground')), [], 'different GND pins are common ground')
+
+  const island = applyOps(normalizeDocument({ parts: [mcu, module('a'), module('b'), module('c')], nets: [] }), [
+    { type: 'connect', nodes: ['mcu:GND', 'a:GND'] },
+    { type: 'connect', nodes: ['b:GND', 'c:GND'] },
+    { type: 'connect', nodes: ['a:SIG', 'mcu:GPIO4'] },
+    { type: 'connect', nodes: ['b:SIG', 'c:SIG'] },
+  ])
+  assert.ok(codes(validate(island)).includes('error:not-common-ground'), 'two islands are still reported')
+}
+
 // 4. 5V on a 3.3V-only module pin is an over-voltage error.
 {
   let doc = withPart(board(), 'sdcard', 'sd')
