@@ -421,6 +421,45 @@ function codes(diagnostics) {
   assert.throws(() => applyOps(split, [{ type: 'set_pin_sides', id: 'nope', sides: { VCC: 'left' } }]), /未知部件/)
 }
 
+// 14. A drawn wire is remembered on the net, survives a merge, and is dropped
+//     when a pin leaves the net or the file names a pin that is gone.
+{
+  let doc = withPart(board(), 'dht22', 'dht')
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:DATA'] }])
+  assert.deepEqual(doc.nets[0].wires, [['mcu:GPIO4', 'dht:DATA']])
+  const joined = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:VCC'] }])
+  assert.deepEqual(joined.nets[0].wires, [['mcu:GPIO4', 'dht:DATA'], ['mcu:GPIO4', 'dht:VCC']])
+
+  let two = withPart(board(), 'dht22', 'dht')
+  two = applyOps(two, [{ type: 'connect', nodes: ['mcu:GND', 'dht:GND'] }])
+  two = applyOps(two, [{ type: 'connect', nodes: ['mcu:GND2', 'dht:VCC'] }])
+  two = applyOps(two, [{ type: 'connect', nodes: ['mcu:GND', 'mcu:GND2'], net: { name: 'GND' } }])
+  assert.equal(two.nets.length, 1)
+  assert.deepEqual(two.nets[0].wires, [
+    ['mcu:GND', 'dht:GND'],
+    ['mcu:GND2', 'dht:VCC'],
+    ['mcu:GND', 'mcu:GND2'],
+  ])
+
+  const unlinked = applyOps(joined, [{ type: 'unlink', node: 'dht:DATA' }])
+  assert.deepEqual(unlinked.nets[0].wires, [['mcu:GPIO4', 'dht:VCC']])
+
+  const stale = normalizeDocument({
+    parts: [
+      { id: 'mcu', kind: 'board', pins: [{ name: 'GPIO4', role: 'bidir' }, { name: '3V3', role: 'power' }] },
+      { id: 'dht', kind: 'module', pins: [{ name: 'DATA', role: 'bidir' }, { name: 'VCC', role: 'power' }] },
+    ],
+    nets: [{
+      id: 'n1',
+      name: 'GPIO4',
+      kind: 'signal',
+      nodes: ['mcu:GPIO4', 'dht:DATA'],
+      wires: [['mcu:GPIO4', 'nope:X'], ['mcu:GPIO4', 'dht:DATA']],
+    }],
+  })
+  assert.deepEqual(stale.nets[0].wires, [['mcu:GPIO4', 'dht:DATA']])
+}
+
 function assertsPending(doc) {
   assert.equal(doc.pending[0].note, '把 DHT22 的数据线接到 GPIO4')
   assert.equal(doc.pending[0].ops[0].type, 'connect')

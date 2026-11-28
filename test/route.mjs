@@ -36,7 +36,7 @@ function require(id) {
 
 await import('../client.js')
 assert.ok(captured.module !== undefined, 'the bundle registered itself')
-const { scene, wirePath, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf } = captured.module.internals
+const { scene, wirePath, wireSegments, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf } = captured.module.internals
 
 const board = {
   id: 'mcu',
@@ -104,6 +104,23 @@ const buzzer = {
   assert.equal(d.match(/M /g).length, 2)
   assert.equal(wirePath(anchors, { nodes: ['mcu:3V3'] }), '')
   assert.equal(wirePath(anchors, { nodes: ['mcu:3V3', 'nope:x'] }), '')
+}
+
+// 3b. A net remembers the wires that were drawn: a rail feeding two loads is two
+//     wires leaving the same pin, not a tree through whichever pin is nearest.
+{
+  const second = { ...buzzer, id: 'buzzer2', at: [646, 500] }
+  const { anchors } = scene([board, buzzer, second])
+  const hand = {
+    nodes: ['mcu:3V3', 'buzzer:VCC', 'buzzer2:VCC'],
+    wires: [['mcu:3V3', 'buzzer:VCC'], ['mcu:3V3', 'buzzer2:VCC']],
+  }
+  const d = wirePath(anchors, hand)
+  assert.equal(d.match(/M /g).length, 2)
+  assert.equal(d.match(/M 291 /g).length, 2, 'both wires leave the pin that was dragged from')
+  const partially = { ...hand, wires: [['mcu:3V3', 'buzzer:VCC']] }
+  const attached = wireSegments(anchors, partially)
+  assert.equal(attached.length, 2, 'a pin nobody wired still hangs off the net')
 }
 
 // 4. Orientation is guessed from the wiring, never overriding a hand layout.

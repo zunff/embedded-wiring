@@ -342,10 +342,49 @@ window.__ModuleLoader__.load({
       return segments
     }
 
-    function wirePath(anchors, net) {
+    /**
+     * The segments a net is drawn with. Wires drawn by hand are kept as drawn, so
+     * a rail with two loads looks like two wires leaving the same pin instead of
+     * whatever the shortest tree would pick. Pins that were never wired by hand
+     * (added by the agent, or merged in) attach to the nearest point already on
+     * the net, and a net with no recorded wires keeps the shortest tree.
+     */
+    function wireSegments(anchors, net) {
       const points = net.nodes.map(node => anchors.get(node)).filter(Boolean)
-      if (points.length < 2) return ''
-      return spanningSegments(points)
+      if (points.length < 2) return []
+      const drawn = []
+      const covered = []
+      for (const pair of Array.isArray(net.wires) ? net.wires : []) {
+        if (!Array.isArray(pair) || pair.length !== 2) continue
+        const from = anchors.get(pair[0])
+        const to = anchors.get(pair[1])
+        if (from === undefined || to === undefined) continue
+        drawn.push([from, to])
+        for (const node of pair) if (!covered.includes(node)) covered.push(node)
+      }
+      if (drawn.length === 0) return spanningSegments(points)
+      const rest = net.nodes.filter(node => !covered.includes(node)).map(node => anchors.get(node)).filter(Boolean)
+      if (rest.length === 0) return drawn
+      const tree = points.filter(point => !rest.includes(point))
+      const pending = [...rest]
+      while (pending.length > 0) {
+        let best
+        for (let index = 0; index < pending.length; index += 1) {
+          const point = pending[index]
+          for (const other of tree) {
+            const cost = Math.abs(point.x - other.x) + Math.abs(point.y - other.y)
+            if (best === undefined || cost < best.cost) best = { cost, from: other, at: index }
+          }
+        }
+        drawn.push([best.from, pending[best.at]])
+        tree.push(pending[best.at])
+        pending.splice(best.at, 1)
+      }
+      return drawn
+    }
+
+    function wirePath(anchors, net) {
+      return wireSegments(anchors, net)
         .map(segment => curvePath(segment[0], segment[1]))
         .join(' ')
     }
@@ -1704,7 +1743,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
-      internals: { scene, wirePath, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf },
+      internals: { scene, wirePath, wireSegments, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))
