@@ -225,6 +225,36 @@ const cardsApart = cards => {
   assert.deepEqual([...again.sides], [...sides], 'the split is stable')
 }
 
+// 6b. A ground pin is not dragged to the far side by the ground net: it joins
+//     its twin on the same connector, so a charger keeps B+ and B− together.
+{
+  const pin = (name, role) => ({ name, role, side: 'left' })
+  const charger = {
+    id: 'charger',
+    kind: 'module',
+    at: [420, 300],
+    pins: [
+      pin('IN+', 'power'),
+      pin('IN-', 'ground'),
+      pin('B+', 'power'),
+      pin('B-', 'ground'),
+      pin('OUT+', 'power'),
+      pin('OUT-', 'ground'),
+    ],
+  }
+  const battery = { id: 'battery', kind: 'module', at: [40, 300], pins: [pin('+', 'power'), pin('-', 'ground')] }
+  const boost = { id: 'boost', kind: 'module', at: [820, 300], pins: [pin('VIN+', 'power'), pin('VIN-', 'ground')] }
+  const nets = [
+    { kind: 'power', nodes: ['battery:+', 'charger:B+'] },
+    { kind: 'power', nodes: ['charger:OUT+', 'boost:VIN+'] },
+    { kind: 'ground', nodes: ['charger:B-', 'charger:OUT-', 'charger:IN-', 'battery:-', 'boost:VIN-'] },
+  ]
+  const { sides } = tidyParts([charger, battery, boost], nets)
+  assert.equal(sides.get('charger')['B-'], 'left', 'B− stays with B+ against the battery')
+  assert.equal(sides.get('charger')['OUT-'], 'right', 'OUT− stays with OUT+ towards the load')
+  assert.equal(sides.get('charger')['IN+'], 'left', 'a lone input pin follows its neighbour')
+}
+
 // 7. A part the user arranged by hand is theirs: tidy moves the card but leaves
 //    the edges alone. An explicit pin list from the agent is not a hand layout.
 {

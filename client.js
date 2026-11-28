@@ -374,6 +374,9 @@ window.__ModuleLoader__.load({
     // belongs next to; a signal net says a lot.
     const netWeight = net => (net.kind === 'ground' ? 0.35 : net.kind === 'power' ? 0.7 : 1)
 
+    /** Two halves of one connector: VIN+ / VIN−, OUTA1 / OUTA2, P1 / P2. */
+    const pairKey = name => name.replace(/[+-]$/, '').replace(/\d+$/, '#')
+
     /** A part as the layout wants to draw it: planned edges folded in, flip kept. */
     function withSides(part, edge) {
       if (edge === undefined) return part
@@ -419,9 +422,13 @@ window.__ModuleLoader__.load({
         placed.set(part.id, at === undefined ? part : { ...part, at })
       }
       const centre = id => placed.get(id).at[0] + PART_W / 2
-      // How strongly every pin is pulled towards other cards, and where to.
+      // How strongly every pin is pulled towards other cards, and where to. A
+      // ground net joins half the board, so it says nothing about which edge a
+      // pin belongs on — that pin follows its neighbour in the pin list instead,
+      // which is what keeps a charger's B+ and B− together on one edge.
       const pull = new Map()
       for (const net of nets) {
+        if (net.kind === 'ground') continue
         const weight = netWeight(net)
         if (net.nodes.filter(node => placed.has(ownerOf(node))).length < 2) continue
         for (const node of net.nodes) {
@@ -456,6 +463,22 @@ window.__ModuleLoader__.load({
         }
         if (decided.size === 0) continue
         const edge = { ...Object.fromEntries(decided) }
+        // A header's two halves are named alike: VIN+ / VIN−, B+ / B−, P1 / P2.
+        // When one half is decided, its twin joins it — a ground pin next to its
+        // power pin belongs to the same connector, whatever the ground net says.
+        const partners = new Map()
+        for (const pin of part.pins) {
+          const key = pairKey(pin.name)
+          const list = partners.get(key) ?? []
+          list.push(pin)
+          partners.set(key, list)
+        }
+        for (const pin of part.pins) {
+          if (edge[pin.name] !== undefined) continue
+          const mate = (partners.get(pairKey(pin.name)) ?? [])
+            .find(candidate => candidate.name !== pin.name && edge[candidate.name] !== undefined)
+          if (mate !== undefined) edge[pin.name] = edge[mate.name]
+        }
         for (let index = 0; index < part.pins.length; index += 1) {
           const pin = part.pins[index]
           if (edge[pin.name] !== undefined) continue
