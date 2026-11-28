@@ -208,6 +208,51 @@ const cardsApart = cards => {
   assert.equal(anchors.get('motor:A').y, anchors.get('mcu:P8').y)
 }
 
+// 5c. A card goes to the side of the pin it is wired to even when it was drawn on
+//     the other side, a chain keeps growing outwards, and the pins turn to face
+//     the card they talk to.
+{
+  const mcu = {
+    id: 'mcu',
+    kind: 'board',
+    at: [500, 300],
+    pins: [
+      { name: 'GPIO4', role: 'bidir', side: 'right' },
+      { name: '3V3', role: 'power', side: 'left' },
+    ],
+  }
+  const driver = {
+    id: 'driver',
+    kind: 'module',
+    at: [40, 300],
+    pins: [
+      { name: 'IN1', role: 'input', side: 'left' },
+      { name: 'OUT1', role: 'output', side: 'left' },
+      { name: 'OUT2', role: 'output', side: 'left' },
+    ],
+  }
+  const motor = {
+    id: 'motor',
+    kind: 'module',
+    at: [40, 640],
+    pins: [
+      { name: '+', role: 'passive', side: 'right' },
+      { name: '-', role: 'passive', side: 'right' },
+    ],
+  }
+  const nets = [
+    { kind: 'signal', nodes: ['mcu:GPIO4', 'driver:IN1'] },
+    { kind: 'signal', nodes: ['driver:OUT1', 'motor:+'] },
+    { kind: 'signal', nodes: ['driver:OUT2', 'motor:-'] },
+  ]
+  const { positions, sides } = tidyParts([mcu, driver, motor], nets)
+  assert.ok(positions.get('driver')[0] > positions.get('mcu')[0], 'the driver moves to the GPIO side')
+  assert.ok(positions.get('motor')[0] > positions.get('driver')[0], 'the motor hangs off the driver, further out')
+  assert.equal(sides.get('driver').IN1, 'left', 'inputs face the board')
+  assert.equal(sides.get('driver').OUT1, 'right', 'outputs face the motor')
+  assert.equal(sides.get('motor')['+'], 'left', 'the motor turns its pins towards the driver')
+}
+
 // 6. A module wired both ways has its pins split between its edges: the battery
 //    side of a boost converter ends up on the left edge, its motor side on the
 //    right, so no wire has to wrap around the card.

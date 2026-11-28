@@ -34,7 +34,7 @@ window.__ModuleLoader__.load({
     const STORAGE_PROJECT = 'ew.project'
     // Bumped whenever this file changes in a way the user must see: the page runs
     // whatever bundle the browser loaded, which can be older than the Host.
-    const CLIENT_VERSION = '0.10.0'
+    const CLIENT_VERSION = '0.11.0'
 
     const CSS = `
 .ew-root{position:relative;display:flex;flex-direction:column;flex:1 1 auto;height:100%;min-height:0;overflow:hidden;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-primary,#17181c);background:var(--dsw-alias-bg-layer-1,#fff);font-variant-numeric:tabular-nums}
@@ -408,8 +408,8 @@ window.__ModuleLoader__.load({
       gap: 96,      // space between two columns
       row: 28,      // space between two cards in one column
       grid: 10,
-      columns: 6,
-      cluster: 150, // neighbours closer than this in x share a column
+      columns: 6,   // how far a chain may grow from the board
+      passes: 4,    // pin edges and layout settle in a couple of rounds
       tie: 70,      // a neighbour this close in x says nothing about the edge
     }
 
@@ -551,46 +551,106 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The anchor and the columns around it. A card stays on the side of the board
-     * it was drawn on, and cards at a similar distance share a column, nearest
-     * first, so the columns grow outwards from the board.
+     * Which side of the board a card belongs on, and how far out. The board's own
+     * header pins are the only physical fact: a card wired to a pin on the right
+     * column goes right, one wired to a pin on the left goes left, and a chain
+     * keeps growing outwards from whatever it hangs off. A card with no wires at
+     * all, or a pin layout the user arranged by hand, stays where it was drawn.
      */
-    function columnsOf(drawn, nets) {
+    function planColumns(drawn, nets) {
+      const byId = new Map(drawn.map(part => [part.id, part]))
       const edges = weightsOf(drawn, nets)
       const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
       const boards = drawn.filter(part => part.kind === 'board')
       const pool = boards.length > 0 ? boards : drawn
       const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
       const hubCentre = hub.at[0] + PART_W / 2
-      const lanes = { left: [], right: [] }
-      for (const part of drawn) {
-        if (part.id === hub.id) continue
-        const dx = part.at[0] + PART_W / 2 - hubCentre
-        lanes[dx < 0 ? 'left' : 'right'].push({ part, distance: Math.abs(dx) })
-      }
-      const columns = []
-      for (const side of ['left', 'right']) {
-        const lane = lanes[side]
-        lane.sort((a, b) => a.distance - b.distance || a.part.at[1] - b.part.at[1] || (a.part.id < b.part.id ? -1 : 1))
-        const groups = []
-        let group
-        let anchor
-        for (const entry of lane) {
-          const fresh = anchor === undefined || entry.distance - anchor > TIDY.cluster
-          if (fresh && groups.length < TIDY.columns) {
-            anchor = entry.distance
-            group = [entry.part]
-            groups.push(group)
-          } else {
-            group.push(entry.part)
+      const drawnSide = part => (part.at[0] + PART_W / 2 - hubCentre < 0 ? 'left' : 'right')
+
+      // Hop count from the anchor over real wires. A ground net joins everything,
+      // so it says nothing about how far out a card belongs.
+      const neighbours = new Map()
+      for (const net of nets) {
+        if (net.kind === 'ground') continue
+        const owners = [...new Set(net.nodes.map(ownerOf))].filter(id => byId.has(id))
+        for (const owner of owners) {
+          for (const other of owners) {
+            if (other === owner) continue
+            const list = neighbours.get(owner) ?? []
+            if (!list.includes(other)) list.push(other)
+            neighbours.set(owner, list)
           }
         }
-        for (const [index, parts] of groups.entries()) {
-          const step = (index + 1) * (PART_W + TIDY.gap)
-          columns.push({ x: side === 'left' ? hub.at[0] - step : hub.at[0] + step, parts })
+      }
+      const depth = new Map([[hub.id, 0]])
+      const queue = [hub.id]
+      while (queue.length > 0) {
+        const id = queue.shift()
+        for (const other of neighbours.get(id) ?? []) {
+          if (depth.has(other)) continue
+          depth.set(other, depth.get(id) + 1)
+          queue.push(other)
         }
       }
-      return { hub, columns }
+
+      // The side each card goes to, decided from the board outwards so a chain
+      // inherits the side of the card it hangs off.
+      const side = new Map()
+      const far = TIDY.columns + 1
+      const ordered = [...drawn].sort((a, b) => (depth.get(a.id) ?? far) - (depth.get(b.id) ?? far) || (a.id < b.id ? -1 : 1))
+      for (const part of ordered) {
+        if (part.id === hub.id) continue
+        if (part.pinsHand === true) {
+          side.set(part.id, drawnSide(part))
+          continue
+        }
+        let left = 0
+        let right = 0
+        for (const net of nets) {
+          if (net.kind === 'ground') continue
+          if (!net.nodes.some(node => ownerOf(node) === part.id)) continue
+          const weight = netWeight(net)
+          for (const node of net.nodes) {
+            const id = ownerOf(node)
+            if (id === part.id) continue
+            let vote
+            if (id === hub.id) {
+              const pin = pinNamed(hub, pinNameOf(node))
+              if (pin === undefined) continue
+              vote = sideOf(hub, pin)
+            } else if (side.has(id)) {
+              vote = side.get(id)
+            } else {
+              continue
+            }
+            if (vote === 'left') left += weight
+            else right += weight
+          }
+        }
+        side.set(part.id, left === right ? drawnSide(part) : left > right ? 'left' : 'right')
+      }
+
+      // One column per hop, nearest the board first, so the board stays in the
+      // middle and everything its pins talk to sits on the matching side.
+      const columns = new Map()
+      for (const part of drawn) {
+        if (part.id === hub.id) continue
+        const hops = Math.min(depth.get(part.id) ?? 1, TIDY.columns)
+        const key = `${side.get(part.id)}:${hops}`
+        const column = columns.get(key) ?? { side: side.get(part.id), hops, parts: [] }
+        column.parts.push(part)
+        columns.set(key, column)
+      }
+      const list = [...columns.values()]
+        .sort((a, b) => a.hops - b.hops || (a.side === b.side ? 0 : a.side === 'left' ? -1 : 1))
+        .map(column => {
+          const step = column.hops * (PART_W + TIDY.gap)
+          return {
+            x: column.side === 'left' ? hub.at[0] - step : hub.at[0] + step,
+            parts: column.parts,
+          }
+        })
+      return { hub, columns: list }
     }
 
     /**
@@ -622,24 +682,11 @@ window.__ModuleLoader__.load({
       return weight === 0 ? undefined : sum / weight
     }
 
-    /**
-     * The tidy result: where every card goes, and the edges each module's pins
-     * should show on. Columns keep the drawing's left/right structure; inside a
-     * column each card lines up with the pins it is wired to, top to bottom, and
-     * two cards never overlap.
-     */
-    function tidyParts(parts, nets) {
-      if (parts.length === 0) return { positions: new Map(), sides: new Map() }
-
-      // 1. Edges, judged from the drawing as it is.
-      const shown = new Map(parts.map(part => [part.id, [part.at[0], part.at[1]]]))
-      const sides = assignSides(parts, nets, shown)
+    /** Place every card: columns from the wiring, height from the pins it talks to. */
+    function layoutOnce(parts, nets, sides) {
       const drawn = parts.map(part => withSides(part, sides.get(part.id)))
       const byId = new Map(drawn.map(part => [part.id, part]))
-
-      // 2. Columns either side of the anchor, then each card placed at the height
-      //    its wiring asks for.
-      const { hub, columns } = columnsOf(drawn, nets)
+      const { hub, columns } = planColumns(drawn, nets)
       const positions = new Map([[hub.id, [hub.at[0], hub.at[1]]]])
       for (const column of columns) {
         const wanted = column.parts.map(part => ({
@@ -657,6 +704,39 @@ window.__ModuleLoader__.load({
           ])
           cursor = y + partHeight(entry.part) + TIDY.row
         }
+      }
+      return positions
+    }
+
+    function sameSides(left, right) {
+      if (left.size !== right.size) return false
+      for (const [id, edge] of left) {
+        const other = right.get(id)
+        if (other === undefined) return false
+        const names = Object.keys(edge)
+        if (names.length !== Object.keys(other).length) return false
+        for (const name of names) if (edge[name] !== other[name]) return false
+      }
+      return true
+    }
+
+    /**
+     * The tidy result: where every card goes, and the edges each module's pins
+     * should show on. A card moves to the side of the board its wiring belongs to,
+     * lines up with the pins it talks to, and never overlaps its neighbours. The
+     * pin edges are recomputed for the layout that comes out, so a card that
+     * switched sides turns its pins around instead of facing empty space.
+     */
+    function tidyParts(parts, nets) {
+      if (parts.length === 0) return { positions: new Map(), sides: new Map() }
+      const base = new Map(parts.map(part => [part.id, [part.at[0], part.at[1]]]))
+      let sides = assignSides(parts, nets, base)
+      let positions = layoutOnce(parts, nets, sides)
+      for (let pass = 0; pass < TIDY.passes; pass += 1) {
+        const next = assignSides(parts, nets, positions)
+        if (sameSides(sides, next)) break
+        sides = next
+        positions = layoutOnce(parts, nets, sides)
       }
       return { positions, sides }
     }
