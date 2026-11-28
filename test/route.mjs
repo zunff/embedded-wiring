@@ -36,7 +36,7 @@ function require(id) {
 
 await import('../client.js')
 assert.ok(captured.module !== undefined, 'the bundle registered itself')
-const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented } = captured.module.internals
+const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented, columns, isSplit } = captured.module.internals
 
 const board = {
   id: 'mcu',
@@ -172,6 +172,36 @@ function segments(points) {
   const flipped = scene([board, oriented(left, guessed)])
   assert.equal(planWire(unflipped.anchors.get('mcu:3V3'), unflipped.anchors.get('buzzer:VCC'), unflipped.cards).kind, 'ortho')
   assert.equal(planWire(flipped.anchors.get('mcu:3V3'), flipped.anchors.get('buzzer:VCC'), flipped.cards).kind, 'curve')
+}
+
+// 8. A wide module is drawn in two columns: supply on the left, the rest on
+//    the right, so the card is shorter and wires can leave on either side.
+{
+  const pins = ['VCC', 'GND', 'IN1', 'IN2', 'IN3', 'IN4', 'OUTA1', 'OUTA2', 'OUTB1', 'OUTB2']
+    .map((name, index) => ({ name, role: index < 2 ? (index === 0 ? 'power' : 'ground') : 'bidir', side: 'left' }))
+  const driver = { id: 'drv', kind: 'module', model: 'mx1508', at: [0, 0], pins }
+  assert.equal(isSplit(driver), true)
+  const sides = columns(driver)
+  assert.equal(sides.get('VCC'), 'left')
+  assert.equal(sides.get('GND'), 'left')
+  assert.equal(sides.get('IN1'), 'right')
+  assert.equal(sides.get('OUTB2'), 'right')
+  const { cards } = scene([driver])
+  const oneColumn = 30 + 8 + 10 * 20 + 10
+  assert.ok(cards[0].h < oneColumn, 'split card is shorter than a ten-row strip')
+
+  // A small module keeps one column; a hand-written part that mixes sides is
+  // left alone even when it is wide.
+  assert.equal(isSplit({ ...driver, pins: pins.slice(0, 3) }), false)
+  const mixed = { ...driver, pins: pins.map((pin, index) => ({ ...pin, side: index % 2 === 0 ? 'left' : 'right' })) }
+  assert.equal(isSplit(mixed), false)
+  assert.equal(columns(mixed).get('IN1'), 'left')
+  assert.equal(columns(mixed).get('GND'), 'right')
+
+  // No supply pins: fall back to splitting the list in half.
+  const passive = { ...driver, pins: pins.map(pin => ({ ...pin, role: 'passive' })) }
+  assert.equal(columns(passive).get('IN3'), 'left')
+  assert.equal(columns(passive).get('IN4'), 'right')
 }
 
 console.log('route: ok')

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { partFromTemplate } from '../lib/library.js'
+import { catalog, partFromTemplate } from '../lib/library.js'
 import {
   applyOps,
   applyPending,
@@ -295,6 +295,27 @@ function codes(diagnostics) {
   const auto = applyOps(locked, [{ type: 'flip', id: 'dht', flip: null }])
   assert.equal(auto.parts.find(part => part.id === 'dht').flip, undefined)
   assert.throws(() => applyOps(doc, [{ type: 'flip', id: 'nope' }]), /未知部件/)
+}
+
+// 11. The library ships icons and the audio/motor parts a page needs, and an
+//     icon survives the file round-trip.
+{
+  const library = catalog()
+  const models = library.parts.map(part => part.model)
+  for (const model of ['inmp441', 'max98357a', 'mx1508', 'n20', 'speaker']) {
+    assert.ok(models.includes(model), `${model} is in the palette`)
+  }
+  assert.equal(library.parts.find(part => part.model === 'max98357a').icon, '📢')
+  assert.ok(library.boards.every(board => typeof board.icon === 'string'), 'every board has an icon')
+  assert.equal(partFromTemplate('inmp441', 'mic', '', [10, 20]).icon, '🎤')
+  assert.equal(normalizeDocument({ parts: [partFromTemplate('n20', 'motor', '', [0, 0])] }).parts[0].icon, '⚙️')
+
+  const custom = applyOps(emptyDocument(), [{
+    type: 'add_part',
+    part: { id: 'rig', icon: '🔧', pins: [{ name: 'A', role: 'passive' }, { name: 'B', role: 'passive' }] },
+  }])
+  assert.equal(custom.parts[0].icon, '🔧')
+  assert.equal(normalizeDocument(JSON.parse(JSON.stringify(custom))).parts[0].icon, '🔧')
 }
 
 function assertsPending(doc) {

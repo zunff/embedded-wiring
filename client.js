@@ -28,6 +28,7 @@ window.__ModuleLoader__.load({
     const ROW = 20
     const PAD_BOTTOM = 10
     const NET_COLORS = { power: '#e8590c', ground: '#868e96', signal: '#1c7ed6', bus: '#9c36b5' }
+    const ICONS = ['🧠', '🎤', '📢', '🔊', '⚙️', '🛞', '🖥️', '🌡️', '🧭', '☀️', '📡', '💡', '🔘', '🎛️', '🔋', '⚡', '🔌', '🌈', '💾', '🔔', '🕹️', '🧩']
     const STYLE_ATTR = 'data-ew-style'
     const STORAGE_WS = 'ew.workspace'
     const STORAGE_PROJECT = 'ew.project'
@@ -53,6 +54,7 @@ window.__ModuleLoader__.load({
 .ew-world{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none}
 .ew-wires{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
 .ew-wire{pointer-events:stroke;cursor:pointer;fill:none;stroke-linecap:round}
+.ew-wire-hit{pointer-events:stroke;cursor:pointer;fill:none;stroke:transparent;stroke-width:14;stroke-linecap:round}
 .ew-wire:hover{stroke-width:3.5}
 .ew-wire[data-selected=true]{stroke-width:3.5}
 .ew-part{position:absolute;pointer-events:auto;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(20,22,30,.18));border-radius:8px;box-shadow:0 1px 2px rgba(10,12,20,.06);user-select:none}
@@ -60,7 +62,10 @@ window.__ModuleLoader__.load({
 .ew-part[data-dragging=true]{box-shadow:0 8px 24px rgba(10,12,20,.18)}
 .ew-part-head{height:30px;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:0 10px;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(20,22,30,.1));cursor:grab;border-radius:8px 8px 0 0;background:var(--dsw-alias-bg-layer-2,#f5f6f7)}
 .ew-part-label{font-weight:600;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ew-part-id{font-size:10px;color:var(--dsw-alias-label-tertiary,#8b909a);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;flex:0 0 auto}
+.ew-part-icon{flex:0 0 auto;font-size:12px;line-height:1}
+.ew-part-id{font-size:10px;color:var(--dsw-alias-label-tertiary,#8b909a);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;flex:0 0 auto;cursor:copy}
+.ew-part-id:hover{color:var(--dsw-alias-brand-primary,#4c8dff)}
+.ew-copyable{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
 .ew-pin{position:absolute;width:50%;height:20px;display:flex;align-items:center;gap:4px;padding:0 10px;font-size:11px;color:var(--dsw-alias-label-secondary,#5c6068);white-space:nowrap}
 .ew-pin[data-side=left]{left:0;justify-content:flex-start}
 .ew-pin[data-side=right]{right:0;justify-content:flex-end}
@@ -133,19 +138,93 @@ window.__ModuleLoader__.load({
       return call(path, { method: 'POST', body: JSON.stringify(value ?? {}) })
     }
 
+    async function copyText(value) {
+      try {
+        if (navigator.clipboard !== undefined) {
+          await navigator.clipboard.writeText(value)
+          return true
+        }
+      } catch (error) {
+        // Clipboard access can be refused; fall back to the old textarea trick.
+      }
+      try {
+        const area = document.createElement('textarea')
+        area.value = value
+        area.setAttribute('readonly', '')
+        area.style.position = 'fixed'
+        area.style.left = '-1000px'
+        document.body.appendChild(area)
+        area.select()
+        const ok = document.execCommand('copy')
+        area.remove()
+        return ok
+      } catch (error) {
+        return false
+      }
+    }
+
     // ---- Geometry -----------------------------------------------------------
 
-    /** Pin edge as the template declares it, before any mirroring. */
+    /** Pin edge as the data says, before mirroring or the automatic split. */
     function templateSide(part, pin) {
       if (pin.side === 'left' || pin.side === 'right') return pin.side
       return part.kind === 'board' ? 'right' : 'left'
     }
 
-    /** Which edge a pin sits on; `flip` mirrors the symbol left to right. */
+    const opposite = side => (side === 'left' ? 'right' : 'left')
+
+    /** A wide module whose pins all sit on one edge is drawn as two columns. */
+    function isSplit(part) {
+      if (part.kind !== 'module' || part.pins.length < 5) return false
+      const first = templateSide(part, part.pins[0])
+      if (!part.pins.every(pin => templateSide(part, pin) === first)) return false
+      // A module that is nothing but supply pins (a charger board) reads better
+      // as one column than as a left/right split of its power pairs.
+      const supply = part.pins.filter(pin => pin.role === 'power' || pin.role === 'ground')
+      return supply.length !== part.pins.length
+    }
+
+    /**
+     * Which edge each pin is drawn on. A board keeps the physical layout (J1
+     * left, J3 right). A wide module is split in two — power and ground on the
+     * left, everything else on the right — so a ten-pin driver is a short card
+     * instead of a ten-row strip. A hand-written part that already mixes sides
+     * is left exactly as it was given.
+     */
+    function columns(part) {
+      const map = new Map()
+      if (isSplit(part)) {
+        const supply = part.pins.filter(pin => pin.role === 'power' || pin.role === 'ground')
+        const usable = supply.length > 0
+          && supply.length < part.pins.length
+          && supply.length <= part.pins.length * 0.6
+        const half = Math.ceil(part.pins.length / 2)
+        const left = usable
+          ? new Set(supply.map(pin => pin.name))
+          : new Set(part.pins.slice(0, half).map(pin => pin.name))
+        for (const pin of part.pins) {
+          const side = left.has(pin.name) ? 'left' : 'right'
+          map.set(pin.name, part.flip === true ? opposite(side) : side)
+        }
+        return map
+      }
+      for (const pin of part.pins) {
+        const side = templateSide(part, pin)
+        map.set(pin.name, part.flip === true ? opposite(side) : side)
+      }
+      return map
+    }
+
+    const COLUMNS = new WeakMap()
+
+    /** Which edge a pin sits on, cached per part object. */
     function sideOf(part, pin) {
-      const side = templateSide(part, pin)
-      if (part.flip !== true) return side
-      return side === 'left' ? 'right' : 'left'
+      let map = COLUMNS.get(part)
+      if (map === undefined) {
+        map = columns(part)
+        COLUMNS.set(part, map)
+      }
+      return map.get(pin.name) ?? 'left'
     }
 
     /**
@@ -174,6 +253,7 @@ window.__ModuleLoader__.load({
       const mirrors = new Map()
       for (const part of parts) {
         if (part.kind === 'board') continue
+        if (isSplit(part)) continue
         if (part.pins.length === 0) continue
         const list = neighbours.get(part.id)
         if (list === undefined) continue
@@ -387,11 +467,41 @@ window.__ModuleLoader__.load({
       return `${d} L ${num(last.x)} ${num(last.y)}`
     }
 
-    function wirePath(anchors, net, cards, offset = 0) {
+    /**
+     * A net with many pins is drawn as a tree, not a star: Prim's algorithm on
+     * Manhattan distance picks the shortest set of segments that still joins
+     * every pin. Two pins give one segment, eleven give ten short ones.
+     */
+    function spanningSegments(points) {
+      if (points.length < 2) return []
+      const picked = [0]
+      const left = points.map((point, index) => index).slice(1)
+      const segments = []
+      while (left.length > 0) {
+        let best
+        for (let index = 0; index < left.length; index += 1) {
+          const a = points[left[index]]
+          for (const chosen of picked) {
+            const b = points[chosen]
+            const cost = Math.abs(a.x - b.x) + Math.abs(a.y - b.y)
+            if (best === undefined || cost < best.cost) {
+              best = { cost, from: chosen, to: left[index], at: index }
+            }
+          }
+        }
+        picked.push(best.to)
+        left.splice(best.at, 1)
+        segments.push([points[best.from], points[best.to]])
+      }
+      return segments
+    }
+
+    function wirePath(anchors, net, cards, lane = 0) {
       const points = net.nodes.map(node => anchors.get(node)).filter(Boolean)
       if (points.length < 2) return ''
-      const [head, ...rest] = points
-      return rest.map(point => pathOf(planWire(head, point, cards, offset))).join(' ')
+      return spanningSegments(points)
+        .map(segment => pathOf(planWire(segment[0], segment[1], cards, lane)))
+        .join(' ')
     }
 
     function contentBounds(doc) {
@@ -506,16 +616,29 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onClose }) {
+    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onCopy, onClose }) {
       const mode = part.flip === undefined ? (flipped ? '自动 · 朝右' : '自动 · 朝左') : (flipped ? '已翻转' : '不翻转')
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
           h('span', {}, part.label),
           h('button', { type: 'button', className: 'ew-x', onClick: onClose, title: '关闭' }, '✕')),
         h('div', { className: 'ew-node' },
+          h('span', { className: 'ew-copyable' }, part.label),
+          h(Button, { onClick: () => onCopy(part.label), title: '复制名称' }, '复制')),
+        h('div', { className: 'ew-node' },
           h('code', {}, part.id),
-          h('span', { className: 'ew-badge' }, part.kind === 'board' ? '板卡' : '模块')),
+          h('span', { className: 'ew-badge' }, part.kind === 'board' ? '板卡' : '模块'),
+          h(Button, { onClick: () => onCopy(part.id), title: '复制 id' }, '复制')),
         h('div', { className: 'ew-node' }, h('span', {}, '型号'), h('code', {}, part.model)),
+        h('div', { className: 'ew-node' },
+          h('span', {}, '图标'),
+          h('select', {
+            className: 'ew-select',
+            value: part.icon ?? '',
+            onChange: event => onIcon(event.target.value),
+          },
+          h('option', { value: '' }, '无'),
+          ICONS.map(icon => h('option', { key: icon, value: icon }, icon)))),
         h('div', { className: 'ew-node' },
           h('span', {}, '引脚朝向'),
           h('span', { className: 'ew-badge' }, mode)),
@@ -552,7 +675,7 @@ window.__ModuleLoader__.load({
             className: 'ew-palette-item',
             onClick: () => onPick(item.model),
           },
-          item.label,
+          item.icon === undefined ? item.label : `${item.icon} ${item.label}`,
           h('small', {}, `${item.model} · ${item.pins} 脚`)))))
       return h('div', {
         className: 'ew-palette',
@@ -626,6 +749,7 @@ window.__ModuleLoader__.load({
       const [library, setLibrary] = useState({ boards: [], parts: [] })
       const [view, setView] = useState({ x: 40, y: 40, z: 1 })
       const [selected, setSelected] = useState(undefined)
+      const [hoverNet, setHoverNet] = useState(undefined)
       const [drag, setDrag] = useState(undefined)
       const [drawing, setDrawing] = useState(undefined)
       const [palette, setPalette] = useState(false)
@@ -964,6 +1088,12 @@ window.__ModuleLoader__.load({
         setSelected(undefined)
       }
       const verifyPart = id => { void save([{ type: 'update_part', id, patch: { verified: true } }], '已标记引脚已核对') }
+      const copy = value => {
+        void copyText(value).then(ok => setMessage(ok ? `已复制：${value}` : '复制失败：浏览器不让访问剪贴板'))
+      }
+      const setIcon = (id, icon) => {
+        void save([{ type: 'update_part', id, patch: { icon: icon === '' ? null : icon } }], '已更新图标')
+      }
       const setFlip = (id, flip) => {
         void save([{ type: 'flip', id, flip }], flip === null ? '已恢复自动朝向' : flip ? '已左右翻转' : '已固定朝向')
       }
@@ -1051,19 +1181,37 @@ window.__ModuleLoader__.load({
       const pending = doc?.pending ?? []
 
       const wireEls = []
+      const hitEls = []
       if (doc !== undefined) {
+        const activeNet = selected?.type === 'net' ? selected.id : undefined
         for (const [index, net] of doc.nets.entries()) {
           const d = wirePath(anchors, net, cards, index)
           if (d === '') continue
+          const color = net.color ?? NET_COLORS[net.kind] ?? NET_COLORS.signal
+          const active = activeNet === net.id
+          const hovered = hoverNet === net.id
+          const dim = activeNet !== undefined && !active
           wireEls.push(h('path', {
             key: net.id,
             className: 'ew-wire',
             d,
-            stroke: net.color ?? NET_COLORS[net.kind] ?? NET_COLORS.signal,
-            strokeWidth: 2,
-            strokeOpacity: 0.9,
-            'data-selected': selected?.type === 'net' && selected.id === net.id,
+            stroke: color,
+            strokeWidth: active || hovered ? 3.2 : 2,
+            strokeOpacity: dim ? 0.12 : 0.9,
+            'data-selected': active || undefined,
             onPointerDown: event => { event.stopPropagation(); setSelected({ type: 'net', id: net.id }) },
+          }))
+          // A 2px line is impossible to hit; the invisible twin below it is not.
+          hitEls.push(h('path', {
+            key: `hit-${net.id}`,
+            className: 'ew-wire-hit',
+            d,
+            onPointerDown: event => {
+              event.stopPropagation()
+              setSelected({ type: 'net', id: net.id })
+            },
+            onPointerEnter: () => setHoverNet(net.id),
+            onPointerLeave: () => setHoverNet(current => (current === net.id ? undefined : current)),
           }))
         }
         for (const item of pending) {
@@ -1137,6 +1285,7 @@ window.__ModuleLoader__.load({
           style: { left: `${part.at[0]}px`, top: `${part.at[1]}px`, width: `${PART_W}px` },
         },
         h('div', { className: 'ew-part-head', onPointerDown: event => startPartDrag(event, part) },
+          part.icon === undefined ? null : h('span', { className: 'ew-part-icon', 'aria-hidden': true }, part.icon),
           h('span', { className: 'ew-part-label', title: part.label }, part.label),
           photo
             ? h('span', {
@@ -1145,7 +1294,15 @@ window.__ModuleLoader__.load({
               title: part.verified === true ? '照片识别的引脚已核对' : '引脚来自照片识别，尚未核对',
             }, part.verified === true ? '照片✓' : '照片?')
             : null,
-          h('span', { className: 'ew-part-id' }, part.id)),
+          h('span', {
+            className: 'ew-part-id',
+            title: '点击复制这个 id',
+            onPointerDown: event => event.stopPropagation(),
+            onClick: event => {
+              event.stopPropagation()
+              copy(part.id)
+            },
+          }, part.id)),
         h('div', { style: { position: 'relative', height: `${partHeight(part) - HEAD}px` } }, rows))
       })
 
@@ -1153,7 +1310,7 @@ window.__ModuleLoader__.load({
         className: 'ew-world',
         style: { transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})` },
       },
-      h('svg', { className: 'ew-wires', width: 6000, height: 4000, 'aria-hidden': true }, ghost, wireEls),
+      h('svg', { className: 'ew-wires', width: 6000, height: 4000, 'aria-hidden': true }, ghost, wireEls, hitEls),
       partEls)
 
       const emptyEl = h('div', { className: 'ew-empty' },
@@ -1204,6 +1361,8 @@ window.__ModuleLoader__.load({
             onVerify: () => verifyPart(selectedPart.id),
             onFlip: () => flipPart(selectedPart),
             onAuto: () => setFlip(selectedPart.id, null),
+            onIcon: icon => setIcon(selectedPart.id, icon),
+            onCopy: copy,
             onClose: () => setSelected(undefined),
           })
           : null
@@ -1319,7 +1478,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
-      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented },
+      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented, columns, isSplit, spanningSegments },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))
