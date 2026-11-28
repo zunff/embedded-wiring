@@ -79,6 +79,8 @@ window.__ModuleLoader__.load({
 .ew-flag[data-ok=true]{background:rgba(47,158,68,.14);color:#2f9e44}
 .ew-pin-dot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--dsw-alias-bg-layer-1,#fff);border:1.5px solid var(--dsw-alias-label-tertiary,#8b909a);cursor:crosshair;z-index:2;transition:transform .1s}
 .ew-pin-dot:hover{transform:scale(1.4);border-color:var(--dsw-alias-brand-primary,#4c8dff);background:var(--dsw-alias-brand-primary,#4c8dff)}
+.ew-pin[data-drop] .ew-pin-dot{transform:scale(1.7);border-color:var(--dsw-alias-brand-primary,#4c8dff);background:var(--dsw-alias-brand-primary,#4c8dff)}
+.ew-pin[data-drop] .ew-pin-name{color:var(--dsw-alias-brand-primary,#4c8dff);font-weight:600}
 .ew-pin[data-side=left] .ew-pin-dot{left:-5px}
 .ew-pin[data-side=right] .ew-pin-dot{right:-5px}
 .ew-pin[data-used][data-side=left] .ew-pin-dot{left:-6px;width:11px;height:11px}
@@ -1102,14 +1104,21 @@ window.__ModuleLoader__.load({
       const connecting = drawing !== undefined
       useEffect(() => {
         if (!connecting) return undefined
+        const over = event => {
+          const element = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(event.clientX, event.clientY) : null
+          return element?.closest?.('[data-node]')?.getAttribute('data-node')
+        }
         const move = event => {
           const point = toWorld(event.clientX, event.clientY)
-          setDrawing(value => (value === undefined ? value : { ...value, x: point.x, y: point.y }))
+          const target = over(event)
+          // Show the pin that would receive the wire: the header has pins one
+          // row apart (5V and 5V_2, GND3 and GND4), and aiming blind is how a
+          // wire lands one row off.
+          setDrawing(value => (value === undefined ? value : { ...value, x: point.x, y: point.y, target }))
         }
         const up = event => {
-          const element = typeof document.elementFromPoint === 'function' ? document.elementFromPoint(event.clientX, event.clientY) : null
-          const target = element?.closest?.('[data-node]')?.getAttribute('data-node')
           const from = drawingRef.current?.from
+          const target = over(event)
           setDrawing(undefined)
           if (from === undefined || typeof target !== 'string' || target === from) return
           const doc = stateRef.current.doc
@@ -1124,7 +1133,7 @@ window.__ModuleLoader__.load({
           const joined = fromNet ?? toNet
           void save(
             [{ type: 'connect', nodes: [from, target] }],
-            joined === undefined ? '已连接' : `已并入「${joined.name}」`,
+            joined === undefined ? `已连接 ${from} → ${target}` : `已并入「${joined.name}」：${from} → ${target}`,
           )
         }
         const cancel = () => setDrawing(undefined)
@@ -1437,9 +1446,12 @@ window.__ModuleLoader__.load({
       }
 
       const ghostFrom = drawing === undefined ? undefined : anchors.get(drawing.from)
+      const ghostTo = drawing?.target === undefined ? undefined : anchors.get(drawing.target)
       const ghost = ghostFrom === undefined || drawing === undefined ? null : h('path', {
         className: 'ew-wire',
-        d: `M ${ghostFrom.x} ${ghostFrom.y} L ${drawing.x} ${drawing.y}`,
+        d: ghostTo === undefined
+          ? `M ${ghostFrom.x} ${ghostFrom.y} L ${drawing.x} ${drawing.y}`
+          : `M ${ghostFrom.x} ${ghostFrom.y} L ${ghostTo.x} ${ghostTo.y}`,
         stroke: 'var(--dsw-alias-brand-primary,#4c8dff)',
         strokeWidth: 2,
         strokeDasharray: '5 4',
@@ -1464,6 +1476,7 @@ window.__ModuleLoader__.load({
             'data-wide': wide,
             'data-role': pin.role,
             'data-used': net === undefined ? undefined : '',
+            'data-drop': drawing?.target === node ? '' : undefined,
             style: { top: `${PAD_TOP + rowOf(part, pin) * ROW}px` },
             title,
           },
