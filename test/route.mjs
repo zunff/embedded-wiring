@@ -143,13 +143,16 @@ const buzzer = {
   const right = { id: 'right', kind: 'module', at: [0, 0], pins: [{ name: 'SIG', role: 'bidir', side: 'left' }] }
   const nets = [{ nodes: ['mcu:3V3', 'left:VCC'] }, { nodes: ['mcu:GPIO4', 'right:SIG'] }]
 
-  const positions = tidyParts([mcu, left, right], nets)
+  const { positions, flips } = tidyParts([mcu, left, right], nets)
   assert.deepEqual(positions.get('mcu'), [500, 300], 'the board never moves')
   const placed = [mcu, left, right].map(part => ({ ...part, at: positions.get(part.id) }))
   const { anchors, cards } = scene(placed)
   assert.ok(anchors.get('left:VCC').x < anchors.get('mcu:3V3').x, 'a part wired to a left pin stays left')
   assert.ok(anchors.get('right:SIG').x > anchors.get('mcu:GPIO4').x, 'a part wired to a right pin goes right')
   assert.ok(Math.abs(anchors.get('left:VCC').y - anchors.get('mcu:3V3').y) < 40, 'the two pins line up')
+  // A part on the board's left turns its pins towards the board.
+  assert.equal(flips.get('left'), true)
+  assert.equal(flips.get('right'), false)
   for (let i = 0; i < cards.length; i += 1) {
     for (let j = i + 1; j < cards.length; j += 1) {
       const a = cards[i]
@@ -159,7 +162,9 @@ const buzzer = {
       assert.ok(apart, `cards ${i} and ${j} do not overlap`)
     }
   }
-  assert.deepEqual([...tidyParts([mcu, left, right], nets)], [...positions], 'same input, same layout')
+  const again = tidyParts([mcu, left, right], nets)
+  assert.deepEqual([...again.positions], [...positions], 'same input, same layout')
+  assert.deepEqual([...again.flips], [...flips], 'same input, same orientations')
 }
 
 // 6. Without a board, the most connected part is the anchor and everything else
@@ -169,7 +174,7 @@ const buzzer = {
   const make = (id, at) => ({ id, kind: 'module', at, pins: [pin, { ...pin, name: 'B' }] })
   const parts = [make('a', [0, 0]), make('b', [1500, 0]), make('c', [3000, 800])]
   const nets = [{ nodes: ['a:A', 'b:A'] }, { nodes: ['b:A', 'c:A'] }]
-  const positions = tidyParts(parts, nets)
+  const { positions } = tidyParts(parts, nets)
   assert.deepEqual(positions.get('b'), [1500, 0], 'the hub part stays put')
   const placed = parts.map(part => ({ ...part, at: positions.get(part.id) }))
   const span = Math.max(...placed.map(part => part.at[0])) - Math.min(...placed.map(part => part.at[0]))

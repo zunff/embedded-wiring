@@ -419,6 +419,7 @@ window.__ModuleLoader__.load({
       // A spanning tree grown from the anchor by the strongest link, so a module
       // hangs off the part it actually talks to rather than off the ground net.
       const placed = new Map([[hub.id, { x: hub.at[0], y: hub.at[1] }]])
+      const flips = new Map()
       const pending = new Set(parts.map(part => part.id).filter(id => id !== hub.id))
       while (pending.size > 0) {
         let best
@@ -443,6 +444,14 @@ window.__ModuleLoader__.load({
           x: contact.side === 'left' ? at.x - TIDY.gap - PART_W : at.x + PART_W + TIDY.gap,
           y: at.y + contact.py - contact.cy,
         })
+        // A part hanging to the left of its parent should show its pins on its
+        // own right edge, i.e. facing the parent.
+        const uniform = new Set(child.pins.map(pin => templateSide(child, pin))).size === 1
+        if (child.kind !== 'board' && uniform && child.pins.length > 0) {
+          const showing = templateSide(child, child.pins[0])
+          const wanted = contact.side === 'left' ? 'right' : 'left'
+          flips.set(child.id, showing !== wanted)
+        }
         pending.delete(child.id)
       }
       for (const part of parts) {
@@ -486,18 +495,18 @@ window.__ModuleLoader__.load({
         }
         if (!moved) break
       }
-      const result = new Map()
+      const positions = new Map()
       for (const box of boxes) {
         if (box.id === hub.id) {
-          result.set(box.id, [hub.at[0], hub.at[1]])
+          positions.set(box.id, [hub.at[0], hub.at[1]])
           continue
         }
-        result.set(box.id, [
+        positions.set(box.id, [
           Math.round(box.x / TIDY.grid) * TIDY.grid,
           Math.round(box.y / TIDY.grid) * TIDY.grid,
         ])
       }
-      return result
+      return { positions, flips }
     }
 
     function contentBounds(doc) {
@@ -1188,21 +1197,26 @@ window.__ModuleLoader__.load({
 
       const tidyUp = () => {
         if (doc === undefined || doc.parts.length === 0) return
-        const positions = tidyParts(doc.parts, doc.nets)
+        const { positions, flips } = tidyParts(doc.parts, doc.nets)
         const ops = []
         const moved = []
         for (const part of doc.parts) {
           const at = positions.get(part.id)
           if (at === undefined) continue
-          moved.push({ ...part, at })
-          if (Math.round(part.at[0]) === at[0] && Math.round(part.at[1]) === at[1]) continue
-          ops.push({ type: 'move', id: part.id, at })
+          const shown = part.flip === undefined ? mirrors.get(part.id) === true : part.flip === true
+          const flip = flips.get(part.id)
+          const wantsFlip = flip !== undefined && flip !== shown
+          moved.push({ ...part, at, flip: flip === undefined ? part.flip : flip })
+          if (Math.round(part.at[0]) !== at[0] || Math.round(part.at[1]) !== at[1]) {
+            ops.push({ type: 'move', id: part.id, at })
+          }
+          if (wantsFlip) ops.push({ type: 'flip', id: part.id, flip })
         }
         if (ops.length === 0) {
           setMessage('已经很整齐了')
           return
         }
-        void save(ops, `已整理 ${ops.length} 个部件的位置`)
+        void save(ops, `已整理 ${ops.length} 处（位置与朝向）`)
         fitToBounds(contentBounds({ parts: moved }))
       }
 
