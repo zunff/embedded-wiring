@@ -1113,12 +1113,19 @@ window.__ModuleLoader__.load({
           setDrawing(undefined)
           if (from === undefined || typeof target !== 'string' || target === from) return
           const doc = stateRef.current.doc
-          const occupied = doc === undefined ? undefined : doc.nets.find(net => net.nodes.includes(from))
-          if (occupied !== undefined) {
-            setMessage(`引脚 ${from} 已经连在「${occupied.name}」上`)
+          // Both pins can be wired already: the model joins their nets, which is
+          // what "把这几根地线并到一起" means in a schematic.
+          const fromNet = doc?.nets.find(net => net.nodes.includes(from))
+          const toNet = doc?.nets.find(net => net.nodes.includes(target))
+          if (fromNet !== undefined && fromNet === toNet) {
+            setMessage(`这两个引脚已经在「${fromNet.name}」上`)
             return
           }
-          void save([{ type: 'connect', nodes: [from, target] }], '已连接')
+          const joined = fromNet ?? toNet
+          void save(
+            [{ type: 'connect', nodes: [from, target] }],
+            joined === undefined ? '已连接' : `已并入「${joined.name}」`,
+          )
         }
         const cancel = () => setDrawing(undefined)
         window.addEventListener('pointermove', move)
@@ -1650,7 +1657,7 @@ window.__ModuleLoader__.load({
       doc === undefined ? emptyEl : world,
       pendingEl,
       inspectorEl,
-      h('div', { className: 'ew-hint' }, '拖标题移动 · 从引脚圆点拖到另一个引脚连线 · 实心圆点=已接线 · 点线编辑 · 滚轮缩放 · Delete 删线'))
+      h('div', { className: 'ew-hint' }, '拖标题移动 · 引脚拖到引脚=连线，拖到实心圆点=并入那条网络 · 点线编辑 · 滚轮缩放 · Delete 删线'))
 
       return h('div', { className: 'ew-root' },
         bar,

@@ -174,10 +174,20 @@ try {
   assert.equal(confirmed.status, 200)
   assert.ok(!confirmed.json.diagnostics.some(item => item.code === 'photo-unverified'))
 
+  // Connecting onto a wired pin joins its net — how a module gets onto GND.
+  const joined = await call('/embedded-wiring/ops', 'POST', {
+    workspace: workspace.id,
+    baseRev: confirmed.json.rev,
+    ops: [{ type: 'connect', nodes: ['dht:GND', 'photo1:GND'] }],
+  })
+  assert.equal(joined.status, 200, JSON.stringify(joined.json))
+  assert.equal(joined.json.doc.nets.length, confirmed.json.doc.nets.length, 'no second GND net was invented')
+  assert.ok(joined.json.doc.nets.find(net => net.name === 'GND').nodes.includes('photo1:GND'))
+
   // Splitting pins between the two edges is layout only, and rides the same route.
   const split = await call('/embedded-wiring/ops', 'POST', {
     workspace: workspace.id,
-    baseRev: confirmed.json.rev,
+    baseRev: joined.json.rev,
     ops: [{ type: 'set_pin_sides', id: 'photo1', sides: { VCC: 'left', GND: 'right' } }],
   })
   assert.equal(split.status, 200, JSON.stringify(split.json))

@@ -548,6 +548,7 @@ export function apply(ctx, config) {
       'A workspace can hold several wiring projects, one per directory (the file travels with its repo). Use action "list" to see them and how many boards each has.',
       'Use action "read" before discussing pins, power, or code generation: it returns parts, nets, unconnected pins, and diagnostics.',
       'Nodes are "partId:pinName", for example "mcu:GPIO4" or "dht:DATA".',
+      'Action "connect" never refuses because a pin is already wired: the new pins join the net that pin sits on, and connecting pins from two different nets merges those nets (the first net keeps its id, name and kind), which is how a module joins GND.',
       'Board models: esp32-devkitc, esp32-c3-devkitc-02, esp32-c3-devkitm-1, esp32-c3-supermini, esp32-s3-devkitc-1. Module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
       'Action "flip" mirrors a part so its pins face the other edge; it is layout only and every wire stays attached. The page already orients a module towards the parts it is wired to, so use flip only to override that guess (or flipAuto: true to clear the override).',
       'Action "set_pin_sides" moves named pins between the two edges without touching the wiring; use it when the user wants a module drawn with its input connectors on one edge and its outputs on the other. The page\'s own "一键整理" already splits pins by which side their wires leave towards.',

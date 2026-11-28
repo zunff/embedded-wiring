@@ -225,14 +225,31 @@ function codes(diagnostics) {
   assert.ok(found.includes('error:rail-mix'), found.join(','))
 }
 
-// 7. One pin on two nets is a structural refusal.
+// 7. Connecting to a wired pin joins its net instead of refusing, and two nets
+//    merge into one — that is how a module joins GND.
 {
   let doc = withPart(board(), 'dht22', 'dht')
   doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:DATA'] }])
+  const joined = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:VCC'] }])
+  assert.equal(joined.nets.length, 1)
+  assert.deepEqual(joined.nets[0].nodes, ['mcu:GPIO4', 'dht:DATA', 'dht:VCC'])
   assert.throws(
-    () => applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:VCC'] }]),
-    /已经连在/,
+    () => applyOps(joined, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:DATA'] }]),
+    /本来就连在/,
+    'a no-op connect says so instead of inventing a second net',
   )
+
+  let two = withPart(board(), 'dht22', 'dht')
+  two = applyOps(two, [{ type: 'connect', nodes: ['mcu:GND', 'dht:GND'] }])
+  two = applyOps(two, [{ type: 'connect', nodes: ['mcu:GND2', 'dht:VCC'] }])
+  assert.equal(two.nets.length, 2)
+  const merged = applyOps(two, [{ type: 'connect', nodes: ['dht:GND', 'dht:VCC'] }])
+  assert.equal(merged.nets.length, 1, 'the two nets became one')
+  assert.deepEqual(merged.nets[0].nodes, ['mcu:GND', 'dht:GND', 'dht:VCC', 'mcu:GND2'])
+  assert.deepEqual(validate(merged).map(item => item.code).filter(code => code === 'pin-twice'), [])
+  // The net that survives keeps its identity, so a merge never renames GND.
+  assert.equal(merged.nets[0].name, 'GND')
+  assert.equal(merged.nets[0].kind, 'ground')
 }
 
 // 8. Pending proposals dry-run, then apply or discard.
