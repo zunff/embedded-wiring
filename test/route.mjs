@@ -36,7 +36,7 @@ function require(id) {
 
 await import('../client.js')
 assert.ok(captured.module !== undefined, 'the bundle registered itself')
-const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented, columns, isSplit } = captured.module.internals
+const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented, columns, isSplit, tidyParts } = captured.module.internals
 
 const board = {
   id: 'mcu',
@@ -202,6 +202,33 @@ function segments(points) {
   const passive = { ...driver, pins: pins.map(pin => ({ ...pin, role: 'passive' })) }
   assert.equal(columns(passive).get('IN3'), 'left')
   assert.equal(columns(passive).get('IN4'), 'right')
+}
+
+// 9. "一键整理" pulls wired parts together, keeps cards apart, and is
+//    deterministic.
+{
+  const pin = { name: 'A', role: 'passive', side: 'left' }
+  const make = (id, at) => ({ id, kind: 'module', at, pins: [pin, { ...pin, name: 'B' }] })
+  const parts = [make('a', [0, 0]), make('b', [1500, 0]), make('c', [3000, 800])]
+  const nets = [{ nodes: ['a:A', 'b:A'] }, { nodes: ['b:A', 'c:A'] }]
+
+  const positions = tidyParts(parts, nets)
+  assert.equal(positions.size, 3)
+  const placed = parts.map(part => ({ ...part, at: positions.get(part.id) }))
+  const { cards } = scene(placed)
+  for (let i = 0; i < cards.length; i += 1) {
+    for (let j = i + 1; j < cards.length; j += 1) {
+      const a = cards[i]
+      const b = cards[j]
+      const apart = a.x + a.w + 8 <= b.x || b.x + b.w + 8 <= a.x
+        || a.y + a.h + 8 <= b.y || b.y + b.h + 8 <= a.y
+      assert.ok(apart, `cards ${i} and ${j} do not overlap`)
+    }
+  }
+  const span = Math.max(...placed.map(part => part.at[0])) - Math.min(...placed.map(part => part.at[0]))
+  assert.ok(span < 1400, 'the layout gets compact')
+  const again = tidyParts(parts, nets)
+  assert.deepEqual([...again], [...positions], 'same input, same layout')
 }
 
 console.log('route: ok')

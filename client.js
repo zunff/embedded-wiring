@@ -504,6 +504,88 @@ window.__ModuleLoader__.load({
         .join(' ')
     }
 
+    // ---- Auto layout --------------------------------------------------------
+    // "一键整理" relaxes the arrangement instead of rebuilding it: every net pulls
+    // its parts together, cards push each other apart, and whatever grouping the
+    // user already made survives. Pure geometry, so the tests cover it.
+
+    const TIDY = { rest: 320, margin: 56, rounds: 240, grid: 10 }
+
+    function tidyParts(parts, nets) {
+      if (parts.length === 0) return new Map()
+      const boxes = parts.map(part => ({
+        id: part.id,
+        x: part.at[0],
+        y: part.at[1],
+        w: PART_W,
+        h: partHeight(part),
+      }))
+      const index = new Map(boxes.map((box, position) => [box.id, position]))
+      const links = []
+      for (const net of nets) {
+        const owners = [...new Set(net.nodes.map(node => node.split(':')[0]))]
+          .map(id => index.get(id))
+          .filter(position => position !== undefined)
+        if (owners.length < 2) continue
+        const weight = 1 / (owners.length - 1)
+        for (let a = 0; a < owners.length; a += 1) {
+          for (let b = a + 1; b < owners.length; b += 1) {
+            links.push({ a: owners[a], b: owners[b], weight })
+          }
+        }
+      }
+      for (let round = 0; round < TIDY.rounds; round += 1) {
+        const step = 1 - (round / TIDY.rounds) * 0.8
+        const drift = boxes.map(() => ({ x: 0, y: 0 }))
+        for (const link of links) {
+          const from = boxes[link.a]
+          const to = boxes[link.b]
+          const dx = (to.x + to.w / 2) - (from.x + from.w / 2)
+          const dy = (to.y + to.h / 2) - (from.y + from.h / 2)
+          const distance = Math.hypot(dx, dy) || 1
+          const pull = (distance - TIDY.rest) * 0.05 * link.weight * step
+          const ux = dx / distance
+          const uy = dy / distance
+          drift[link.a].x += ux * pull
+          drift[link.a].y += uy * pull
+          drift[link.b].x -= ux * pull
+          drift[link.b].y -= uy * pull
+        }
+        boxes.forEach((box, position) => {
+          box.x += drift[position].x
+          box.y += drift[position].y
+        })
+        for (let a = 0; a < boxes.length; a += 1) {
+          for (let b = a + 1; b < boxes.length; b += 1) {
+            const from = boxes[a]
+            const to = boxes[b]
+            const dx = (to.x + to.w / 2) - (from.x + from.w / 2)
+            const dy = (to.y + to.h / 2) - (from.y + from.h / 2)
+            const across = (from.w + to.w) / 2 + TIDY.margin - Math.abs(dx)
+            const down = (from.h + to.h) / 2 + TIDY.margin - Math.abs(dy)
+            if (across <= 0 || down <= 0) continue
+            if (across < down) {
+              const shift = (across / 2) * 0.5 * step * (dx >= 0 ? 1 : -1)
+              from.x -= shift
+              to.x += shift
+            } else {
+              const shift = (down / 2) * 0.5 * step * (dy >= 0 ? 1 : -1)
+              from.y -= shift
+              to.y += shift
+            }
+          }
+        }
+      }
+      const snapped = boxes.map(box => ({
+        id: box.id,
+        x: Math.round(box.x / TIDY.grid) * TIDY.grid,
+        y: Math.round(box.y / TIDY.grid) * TIDY.grid,
+      }))
+      const shiftX = Math.max(0, 40 - Math.min(...snapped.map(box => box.x)))
+      const shiftY = Math.max(0, 40 - Math.min(...snapped.map(box => box.y)))
+      return new Map(snapped.map(box => [box.id, [box.x + shiftX, box.y + shiftY]]))
+    }
+
     function contentBounds(doc) {
       if (doc.parts.length === 0) return undefined
       let minX = Infinity
@@ -1131,12 +1213,11 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const fit = () => {
-        if (doc === undefined || doc.parts.length === 0) {
+      const fitToBounds = bounds => {
+        if (bounds === undefined) {
           setView({ x: 40, y: 40, z: 1 })
           return
         }
-        const bounds = contentBounds(doc)
         const node = viewportRef.current
         const width = node === null ? 800 : node.clientWidth
         const height = node === null ? 600 : node.clientHeight
@@ -1146,6 +1227,30 @@ window.__ModuleLoader__.load({
           y: height / 2 - (bounds.minY + bounds.height / 2) * z,
           z,
         })
+      }
+
+      const fit = () => {
+        fitToBounds(doc === undefined || doc.parts.length === 0 ? undefined : contentBounds(doc))
+      }
+
+      const tidyUp = () => {
+        if (doc === undefined || doc.parts.length === 0) return
+        const positions = tidyParts(doc.parts, doc.nets)
+        const ops = []
+        const moved = []
+        for (const part of doc.parts) {
+          const at = positions.get(part.id)
+          if (at === undefined) continue
+          moved.push({ ...part, at })
+          if (Math.round(part.at[0]) === at[0] && Math.round(part.at[1]) === at[1]) continue
+          ops.push({ type: 'move', id: part.id, at })
+        }
+        if (ops.length === 0) {
+          setMessage('已经很整齐了')
+          return
+        }
+        void save(ops, `已整理 ${ops.length} 个部件的位置`)
+        fitToBounds(contentBounds({ parts: moved }))
       }
 
       const focus = (kind, id) => {
@@ -1414,6 +1519,11 @@ window.__ModuleLoader__.load({
             `${project.id === '.' ? '根目录' : project.id} · ${project.boards}板/${project.nets}网${project.errors > 0 ? ` · ${project.errors}E` : ''}`))),
         h(Button, { onClick: () => setNewProject(true), disabled: workspaceId === '' }, '＋ 新项目'),
         h(Button, { onClick: () => setPalette(true), disabled: doc === undefined }, '＋ 添加硬件'),
+        h(Button, {
+          onClick: tidyUp,
+          disabled: doc === undefined || doc.parts.length < 2,
+          title: '按连线自动排布部件：只改位置，不改接线',
+        }, '一键整理'),
         h(Button, { onClick: fit, disabled: doc === undefined }, '适配视图'),
         h(Button, {
           onClick: () => setShowDiagnostics(value => !value),
@@ -1478,7 +1588,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
-      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented, columns, isSplit, spanningSegments },
+      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented, columns, isSplit, spanningSegments, tidyParts },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))
