@@ -53,10 +53,10 @@ window.__ModuleLoader__.load({
 .ew-viewport[data-panning=true]{cursor:grabbing}
 .ew-world{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:none}
 .ew-wires{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
-.ew-wire{pointer-events:stroke;cursor:pointer;fill:none;stroke-linecap:round}
+.ew-wire-hits{position:absolute;left:0;top:0;overflow:visible;pointer-events:none}
+.ew-wire{fill:none;stroke-linecap:round}
+.ew-wire-halo{fill:none;stroke:var(--dsw-alias-bg-layer-1,#fff);stroke-width:5;stroke-linecap:round}
 .ew-wire-hit{pointer-events:stroke;cursor:pointer;fill:none;stroke:transparent;stroke-width:14;stroke-linecap:round}
-.ew-wire:hover{stroke-width:3.5}
-.ew-wire[data-selected=true]{stroke-width:3.5}
 .ew-part{position:absolute;pointer-events:auto;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(20,22,30,.18));border-radius:8px;box-shadow:0 1px 2px rgba(10,12,20,.06);user-select:none}
 .ew-part[data-selected=true]{border-color:var(--dsw-alias-brand-primary,#4c8dff);box-shadow:0 0 0 2px rgba(76,141,255,.18)}
 .ew-part[data-dragging=true]{box-shadow:0 8px 24px rgba(10,12,20,.18)}
@@ -89,6 +89,10 @@ window.__ModuleLoader__.load({
 .ew-row label{flex:0 0 42px;color:var(--dsw-alias-label-tertiary,#8b909a);font-size:10.5px}
 .ew-input{flex:1 1 auto;min-width:0;border:1px solid var(--dsw-alias-border-l2,rgba(20,22,30,.16));background:var(--dsw-alias-bg-layer-1,#fff);border-radius:5px;padding:2px 6px;font-size:11px}
 .ew-node{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10.5px;padding:2px 0;border-bottom:1px dashed var(--dsw-alias-border-l1,rgba(20,22,30,.1))}
+.ew-pinrow{display:flex;align-items:center;gap:4px;font-size:10.5px;padding:2px 0;border-bottom:1px dashed var(--dsw-alias-border-l1,rgba(20,22,30,.1))}
+.ew-pinrow code{font-size:10.5px;min-width:46px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+.ew-pinrow .ew-badge{flex:1 1 auto;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ew-pin-btn{padding:0 4px;font-size:9.5px;line-height:15px;min-width:16px}
 .ew-node code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10.5px}
 .ew-x{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#8b909a);cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
 .ew-x:hover{color:var(--dsw-alias-state-error-primary,#e03131)}
@@ -173,58 +177,14 @@ window.__ModuleLoader__.load({
 
     const opposite = side => (side === 'left' ? 'right' : 'left')
 
-    /** A wide module whose pins all sit on one edge is drawn as two columns. */
-    function isSplit(part) {
-      if (part.kind !== 'module' || part.pins.length < 5) return false
-      const first = templateSide(part, part.pins[0])
-      if (!part.pins.every(pin => templateSide(part, pin) === first)) return false
-      // A module that is nothing but supply pins (a charger board) reads better
-      // as one column than as a left/right split of its power pairs.
-      const supply = part.pins.filter(pin => pin.role === 'power' || pin.role === 'ground')
-      return supply.length !== part.pins.length
-    }
-
     /**
-     * Which edge each pin is drawn on. A board keeps the physical layout (J1
-     * left, J3 right). A wide module is split in two — power and ground on the
-     * left, everything else on the right — so a ten-pin driver is a short card
-     * instead of a ten-row strip. A hand-written part that already mixes sides
-     * is left exactly as it was given.
+     * Which edge a pin sits on. The side lives on the pin itself, so the pin can
+     * be moved between columns by hand; `flip` mirrors the whole symbol and
+     * `part.flip` is only ever set by the user or the automatic guess.
      */
-    function columns(part) {
-      const map = new Map()
-      if (isSplit(part)) {
-        const supply = part.pins.filter(pin => pin.role === 'power' || pin.role === 'ground')
-        const usable = supply.length > 0
-          && supply.length < part.pins.length
-          && supply.length <= part.pins.length * 0.6
-        const half = Math.ceil(part.pins.length / 2)
-        const left = usable
-          ? new Set(supply.map(pin => pin.name))
-          : new Set(part.pins.slice(0, half).map(pin => pin.name))
-        for (const pin of part.pins) {
-          const side = left.has(pin.name) ? 'left' : 'right'
-          map.set(pin.name, part.flip === true ? opposite(side) : side)
-        }
-        return map
-      }
-      for (const pin of part.pins) {
-        const side = templateSide(part, pin)
-        map.set(pin.name, part.flip === true ? opposite(side) : side)
-      }
-      return map
-    }
-
-    const COLUMNS = new WeakMap()
-
-    /** Which edge a pin sits on, cached per part object. */
     function sideOf(part, pin) {
-      let map = COLUMNS.get(part)
-      if (map === undefined) {
-        map = columns(part)
-        COLUMNS.set(part, map)
-      }
-      return map.get(pin.name) ?? 'left'
+      const side = templateSide(part, pin)
+      return part.flip === true ? opposite(side) : side
     }
 
     /**
@@ -253,8 +213,10 @@ window.__ModuleLoader__.load({
       const mirrors = new Map()
       for (const part of parts) {
         if (part.kind === 'board') continue
-        if (isSplit(part)) continue
         if (part.pins.length === 0) continue
+        // Pins placed by hand: the layout is the user's, not a guess.
+        if (part.pinsManual === true) continue
+        if (new Set(part.pins.map(pin => templateSide(part, pin))).size > 1) continue
         const list = neighbours.get(part.id)
         if (list === undefined) continue
         const target = list.reduce((sum, value) => sum + value, 0) / list.length
@@ -327,144 +289,26 @@ window.__ModuleLoader__.load({
     }
 
     // ---- Routing ------------------------------------------------------------
-    // Layout is this file's business, so the wire router lives here too. Two
-    // rules: a wire leaves and enters a pin sideways, and it never runs under a
-    // card (an SVG wire below an opaque card just disappears). When a card sits
-    // between the two pins the wire takes an orthogonal detour around it.
+    // Wires are drawn the way the circuit simulators do it: Fritzing bends a
+    // Bézier between two pins, Wokwi runs free horizontal/vertical segments, and
+    // neither tries to dodge the parts — the user moves things instead. So a
+    // wire leaves its pin sideways, curves to the other pin, and is drawn *above*
+    // the cards with a thin halo, which means a wire crossing a card stays
+    // readable instead of taking a long detour around it.
 
-    const STUB = 18
-    const GAP = 14
-    const CORNER = 8
-    const EDGE_PAD = 1.5
+    const HANDLE = 0.4
+    const HANDLE_MIN = 24
+    const HANDLE_MAX = 160
 
     const outward = side => (side === 'right' ? 1 : -1)
-    const near = (left, right) => Math.abs(left - right) < 0.01
     const num = value => Math.round(value * 10) / 10
 
-    function insideCard(x, y, card) {
-      return x > card.x + EDGE_PAD && x < card.x + card.w - EDGE_PAD
-        && y > card.y + EDGE_PAD && y < card.y + card.h - EDGE_PAD
-    }
-
-    /** Axis-aligned segments only: touching a card edge is allowed, entering is not. */
-    function crossesCard(from, to, card) {
-      if (near(from.y, to.y)) {
-        if (from.y <= card.y + EDGE_PAD || from.y >= card.y + card.h - EDGE_PAD) return false
-        return Math.max(from.x, to.x) > card.x + EDGE_PAD && Math.min(from.x, to.x) < card.x + card.w - EDGE_PAD
-      }
-      if (near(from.x, to.x)) {
-        if (from.x <= card.x + EDGE_PAD || from.x >= card.x + card.w - EDGE_PAD) return false
-        return Math.max(from.y, to.y) > card.y + EDGE_PAD && Math.min(from.y, to.y) < card.y + card.h - EDGE_PAD
-      }
-      return false
-    }
-
-    function blockages(points, cards) {
-      let count = 0
-      for (let index = 0; index + 1 < points.length; index += 1) {
-        for (const card of cards) {
-          if (crossesCard(points[index], points[index + 1], card)) count += 1
-        }
-      }
-      return count
-    }
-
-    function walkLength(points) {
-      let total = 0
-      for (let index = 0; index + 1 < points.length; index += 1) {
-        total += Math.abs(points[index].x - points[index + 1].x) + Math.abs(points[index].y - points[index + 1].y)
-      }
-      return total
-    }
-
-    function simplify(points) {
-      const out = []
-      for (const point of points) {
-        const last = out[out.length - 1]
-        if (last !== undefined && near(last.x, point.x) && near(last.y, point.y)) continue
-        out.push(point)
-      }
-      for (let index = out.length - 2; index >= 1; index -= 1) {
-        const prev = out[index - 1]
-        const corner = out[index]
-        const next = out[index + 1]
-        const flat = (near(prev.y, corner.y) && near(corner.y, next.y))
-          || (near(prev.x, corner.x) && near(corner.x, next.x))
-        if (flat) out.splice(index, 1)
-      }
-      return out
-    }
-
-    function curveClear(from, to, cards) {
-      const mid = (from.x + to.x) / 2
-      for (let step = 1; step < 12; step += 1) {
-        const t = step / 12
-        const u = 1 - t
-        const x = u * u * u * from.x + 3 * u * u * t * mid + 3 * u * t * t * mid + t * t * t * to.x
-        const y = u * u * u * from.y + 3 * u * u * t * from.y + 3 * u * t * t * to.y + t * t * t * to.y
-        for (const card of cards) if (insideCard(x, y, card)) return false
-      }
-      return true
-    }
-
-    function planWire(from, to, cards, lane = 0) {
-      if (curveClear(from, to, cards)) return { kind: 'curve', from, to }
-      const a1 = { x: from.x + outward(from.side) * STUB, y: from.y }
-      const b1 = { x: to.x + outward(to.side) * STUB, y: to.y }
-      const left = Math.min(a1.x, b1.x)
-      const right = Math.max(a1.x, b1.x)
-      const band = cards.filter(card => card.x + card.w > left - 0.5 && card.x < right + 0.5)
-      const top = band.length === 0 ? Math.min(from.y, to.y) : Math.min(...band.map(card => card.y))
-      const bottom = band.length === 0 ? Math.max(from.y, to.y) : Math.max(...band.map(card => card.y + card.h))
-      const outerTop = Math.min(top, ...cards.map(card => card.y))
-      const outerBottom = Math.max(bottom, ...cards.map(card => card.y + card.h))
-      // Wires that end up in the same channel are stacked on their own tracks
-      // (further out and further along), so a bundle nests instead of overlapping.
-      const track = Math.min(Math.max(lane, 0), 4)
-      const shift = track * 6
-      const lanes = [
-        top - GAP - shift,
-        bottom + GAP + shift,
-        outerTop - GAP - shift,
-        outerBottom + GAP + shift,
-      ]
-      const entryX = b1.x + outward(to.side) * shift
-      let best
-      for (const y of lanes) {
-        const points = simplify([from, a1, { x: a1.x, y }, { x: entryX, y }, { x: entryX, y: to.y }, to])
-        const score = blockages(points, cards) * 1e6 + walkLength(points)
-        if (best === undefined || score < best.score) best = { points, score }
-      }
-      return { kind: 'ortho', points: best.points }
-    }
-
-    function pathOf(plan) {
-      if (plan.kind === 'curve') {
-        const mid = (plan.from.x + plan.to.x) / 2
-        return `M ${num(plan.from.x)} ${num(plan.from.y)} C ${num(mid)} ${num(plan.from.y)}, ${num(mid)} ${num(plan.to.y)}, ${num(plan.to.x)} ${num(plan.to.y)}`
-      }
-      const points = plan.points
-      if (points.length < 2) return ''
-      let d = `M ${num(points[0].x)} ${num(points[0].y)}`
-      for (let index = 1; index < points.length - 1; index += 1) {
-        const prev = points[index - 1]
-        const corner = points[index]
-        const next = points[index + 1]
-        const inLength = Math.abs(corner.x - prev.x) + Math.abs(corner.y - prev.y)
-        const outLength = Math.abs(next.x - corner.x) + Math.abs(next.y - corner.y)
-        const radius = Math.min(CORNER, inLength / 2, outLength / 2)
-        if (radius < 0.5) {
-          d += ` L ${num(corner.x)} ${num(corner.y)}`
-          continue
-        }
-        const enterX = corner.x - ((corner.x - prev.x) / inLength) * radius
-        const enterY = corner.y - ((corner.y - prev.y) / inLength) * radius
-        const leaveX = corner.x + ((next.x - corner.x) / outLength) * radius
-        const leaveY = corner.y + ((next.y - corner.y) / outLength) * radius
-        d += ` L ${num(enterX)} ${num(enterY)} Q ${num(corner.x)} ${num(corner.y)} ${num(leaveX)} ${num(leaveY)}`
-      }
-      const last = points[points.length - 1]
-      return `${d} L ${num(last.x)} ${num(last.y)}`
+    function curvePath(from, to) {
+      const span = Math.hypot(to.x - from.x, to.y - from.y)
+      const handle = Math.min(HANDLE_MAX, Math.max(HANDLE_MIN, span * HANDLE))
+      const c1x = from.x + outward(from.side) * handle
+      const c2x = to.x + outward(to.side) * handle
+      return `M ${num(from.x)} ${num(from.y)} C ${num(c1x)} ${num(from.y)}, ${num(c2x)} ${num(to.y)}, ${num(to.x)} ${num(to.y)}`
     }
 
     /**
@@ -496,11 +340,11 @@ window.__ModuleLoader__.load({
       return segments
     }
 
-    function wirePath(anchors, net, cards, lane = 0) {
+    function wirePath(anchors, net) {
       const points = net.nodes.map(node => anchors.get(node)).filter(Boolean)
       if (points.length < 2) return ''
       return spanningSegments(points)
-        .map(segment => pathOf(planWire(segment[0], segment[1], cards, lane)))
+        .map(segment => curvePath(segment[0], segment[1]))
         .join(' ')
     }
 
@@ -698,7 +542,7 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onCopy, onClose }) {
+    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onPinSide, onPinMove, onCopy, onClose }) {
       const mode = part.flip === undefined ? (flipped ? '自动 · 朝右' : '自动 · 朝左') : (flipped ? '已翻转' : '不翻转')
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
@@ -735,10 +579,30 @@ window.__ModuleLoader__.load({
         part.note === undefined ? null : h('div', {
           style: { fontSize: '10.5px', color: 'var(--dsw-alias-label-secondary,#5c6068)', margin: '6px 0' },
         }, part.note),
-        h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}`),
-        part.pins.map(pin => h('div', { className: 'ew-node', key: pin.name },
+        h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}（点「左/右」换边，↑↓ 调顺序）`),
+        part.pins.map((pin, index) => h('div', { className: 'ew-pinrow', key: pin.name },
           h('code', {}, pin.name),
-          h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''} · ${sideOf(part, pin) === 'right' ? '右' : '左'}`))),
+          h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''}`),
+          h('button', {
+            type: 'button',
+            className: 'ew-btn ew-pin-btn',
+            title: '换到另一边',
+            onClick: () => onPinSide(part, pin),
+          }, sideOf(part, pin) === 'right' ? '右' : '左'),
+          h('button', {
+            type: 'button',
+            className: 'ew-btn ew-pin-btn',
+            title: '上移一行',
+            disabled: index === 0,
+            onClick: () => onPinMove(part, pin, -1),
+          }, '↑'),
+          h('button', {
+            type: 'button',
+            className: 'ew-btn ew-pin-btn',
+            title: '下移一行',
+            disabled: index === part.pins.length - 1,
+            onClick: () => onPinMove(part, pin, 1),
+          }, '↓'))),
         part.source === 'photo' && part.verified !== true
           ? h('div', { style: { marginTop: '10px' } },
             h(Button, { onClick: onVerify }, '标记引脚已核对'))
@@ -1114,7 +978,7 @@ window.__ModuleLoader__.load({
           .map(part => (drag?.kind === 'part' && drag.id === part.id ? { ...part, at: drag.at } : part))
       // Wires follow the part being dragged because anchors come from the
       // rendered positions, not the saved ones.
-      const { anchors, cards } = scene(renderedParts)
+      const { anchors } = scene(renderedParts)
       // A pin that a net already reaches is drawn filled with that net's colour.
       const usedBy = new Map()
       for (const net of doc?.nets ?? []) {
@@ -1176,6 +1040,25 @@ window.__ModuleLoader__.load({
       const setIcon = (id, icon) => {
         void save([{ type: 'update_part', id, patch: { icon: icon === '' ? null : icon } }], '已更新图标')
       }
+      const patchPins = (part, mutate) => {
+        const pins = part.pins.map(pin => ({ ...pin }))
+        mutate(pins)
+        void save([{ type: 'update_part', id: part.id, patch: { pins } }], '已调整引脚')
+      }
+      const rotatePin = (part, pin) => patchPins(part, pins => {
+        const target = pins.find(candidate => candidate.name === pin.name)
+        if (target === undefined) return
+        // The button flips what is on screen, so undo the mirror first.
+        const shown = sideOf(part, target) === 'left' ? 'right' : 'left'
+        target.side = part.flip === true ? (shown === 'left' ? 'right' : 'left') : shown
+      })
+      const shiftPin = (part, pin, delta) => patchPins(part, pins => {
+        const from = pins.findIndex(candidate => candidate.name === pin.name)
+        const to = from + delta
+        if (from < 0 || to < 0 || to >= pins.length) return
+        const [moved] = pins.splice(from, 1)
+        pins.splice(to, 0, moved)
+      })
       const setFlip = (id, flip) => {
         void save([{ type: 'flip', id, flip }], flip === null ? '已恢复自动朝向' : flip ? '已左右翻转' : '已固定朝向')
       }
@@ -1289,13 +1172,20 @@ window.__ModuleLoader__.load({
       const hitEls = []
       if (doc !== undefined) {
         const activeNet = selected?.type === 'net' ? selected.id : undefined
-        for (const [index, net] of doc.nets.entries()) {
-          const d = wirePath(anchors, net, cards, index)
+        for (const net of doc.nets) {
+          const d = wirePath(anchors, net)
           if (d === '') continue
           const color = net.color ?? NET_COLORS[net.kind] ?? NET_COLORS.signal
           const active = activeNet === net.id
           const hovered = hoverNet === net.id
           const dim = activeNet !== undefined && !active
+          // The halo keeps a wire readable where it crosses a card.
+          wireEls.push(h('path', {
+            key: `${net.id}-halo`,
+            className: 'ew-wire-halo',
+            d,
+            strokeOpacity: dim ? 0.1 : 0.9,
+          }))
           wireEls.push(h('path', {
             key: net.id,
             className: 'ew-wire',
@@ -1304,9 +1194,8 @@ window.__ModuleLoader__.load({
             strokeWidth: active || hovered ? 3.2 : 2,
             strokeOpacity: dim ? 0.12 : 0.9,
             'data-selected': active || undefined,
-            onPointerDown: event => { event.stopPropagation(); setSelected({ type: 'net', id: net.id }) },
           }))
-          // A 2px line is impossible to hit; the invisible twin below it is not.
+          // A 2px line is impossible to hit; the invisible twin below the cards is not.
           hitEls.push(h('path', {
             key: `hit-${net.id}`,
             className: 'ew-wire-hit',
@@ -1328,7 +1217,7 @@ window.__ModuleLoader__.load({
             wireEls.push(h('path', {
               key: `${item.id}-${index}`,
               className: 'ew-wire',
-              d: rest.map(point => pathOf(planWire(head, point, cards))).join(' '),
+              d: rest.map(point => curvePath(head, point)).join(' '),
               stroke: 'var(--dsw-alias-brand-primary,#4c8dff)',
               strokeWidth: 2,
               strokeDasharray: '6 4',
@@ -1415,8 +1304,11 @@ window.__ModuleLoader__.load({
         className: 'ew-world',
         style: { transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})` },
       },
-      h('svg', { className: 'ew-wires', width: 6000, height: 4000, 'aria-hidden': true }, ghost, wireEls, hitEls),
-      partEls)
+      // Hit areas start below the cards (so a card still wins a click), the
+      // visible wires sit above them (so a wire crossing a card stays readable).
+      h('svg', { className: 'ew-wire-hits', width: 6000, height: 4000, 'aria-hidden': true }, hitEls),
+      partEls,
+      h('svg', { className: 'ew-wires', width: 6000, height: 4000, 'aria-hidden': true }, ghost, wireEls))
 
       const emptyEl = h('div', { className: 'ew-empty' },
         h('div', { className: 'ew-card' },
@@ -1467,6 +1359,8 @@ window.__ModuleLoader__.load({
             onFlip: () => flipPart(selectedPart),
             onAuto: () => setFlip(selectedPart.id, null),
             onIcon: icon => setIcon(selectedPart.id, icon),
+            onPinSide: (part, pin) => rotatePin(part, pin),
+            onPinMove: (part, pin, delta) => shiftPin(part, pin, delta),
             onCopy: copy,
             onClose: () => setSelected(undefined),
           })
@@ -1588,7 +1482,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       // Geometry is exported for `test/route.mjs`; the Host only calls `apply`.
-      internals: { scene, planWire, pathOf, wirePath, crossesCard, insideCard, autoMirrors, oriented, columns, isSplit, spanningSegments, tidyParts },
+      internals: { scene, wirePath, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf },
       apply(ctx) {
         if (typeof ctx.effect === 'function') ctx.effect(() => ensureStyle())
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'hardware-wiring' }, WiringPage))

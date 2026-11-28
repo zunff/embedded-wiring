@@ -318,6 +318,24 @@ function codes(diagnostics) {
   assert.equal(normalizeDocument(JSON.parse(JSON.stringify(custom))).parts[0].icon, '🔧')
 }
 
+// 12. Pins can be placed by hand: which edge they sit on and the order they
+//     appear in survive the file round-trip.
+{
+  const doc = withPart(board(), 'ssd1306', 'oled')
+  const part = doc.parts[1]
+  const pins = part.pins.map((pin, index) => ({ ...pin, side: index === 0 ? 'right' : 'left' }))
+  const edited = applyOps(doc, [{ type: 'update_part', id: 'oled', patch: { pins } }])
+  const oled = edited.parts.find(candidate => candidate.id === 'oled')
+  assert.equal(oled.pinsManual, true)
+  assert.equal(oled.pins[0].side, 'right')
+
+  const reordered = [oled.pins[2], oled.pins[0], oled.pins[1], oled.pins[3]].map(pin => ({ ...pin }))
+  const shuffled = applyOps(edited, [{ type: 'update_part', id: 'oled', patch: { pins: reordered } }])
+  const reloaded = normalizeDocument(JSON.parse(JSON.stringify(shuffled))).parts.find(candidate => candidate.id === 'oled')
+  assert.deepEqual(reloaded.pins.map(pin => pin.name), ['SCL', 'VCC', 'GND', 'SDA'])
+  assert.equal(reloaded.pinsManual, true)
+}
+
 function assertsPending(doc) {
   assert.equal(doc.pending[0].note, '把 DHT22 的数据线接到 GPIO4')
   assert.equal(doc.pending[0].ops[0].type, 'connect')

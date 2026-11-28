@@ -1,7 +1,7 @@
 /**
- * Routing test: the browser half is a loader bundle, not an ES module, so it is
+ * Geometry test: the browser half is a loader bundle, not an ES module, so it is
  * loaded here with a stub loader and a stub `react`. What is checked is the pure
- * geometry — where wires leave a pin and whether they run through a card.
+ * geometry — pin anchors, wire shape and the tidy layout.
  *
  * Run with `node test/route.mjs` from the package directory.
  *
@@ -36,7 +36,7 @@ function require(id) {
 
 await import('../client.js')
 assert.ok(captured.module !== undefined, 'the bundle registered itself')
-const { scene, planWire, pathOf, wirePath, crossesCard, autoMirrors, oriented, columns, isSplit, tidyParts } = captured.module.internals
+const { scene, wirePath, curvePath, spanningSegments, tidyParts, autoMirrors, oriented, sideOf } = captured.module.internals
 
 const board = {
   id: 'mcu',
@@ -60,97 +60,53 @@ const buzzer = {
   ],
 }
 
-function segments(points) {
-  const out = []
-  for (let index = 0; index + 1 < points.length; index += 1) out.push([points[index], points[index + 1]])
-  return out
-}
-
-// 1. A wire from a left pin to a pin on the far side of its own card detours
-//    around the card instead of running under it (it used to disappear).
+// 1. Anchors follow the pin's own side, and `flip` mirrors the whole symbol.
 {
-  const { anchors, cards } = scene([board, buzzer])
-  const from = anchors.get('mcu:3V3')
-  const to = anchors.get('buzzer:VCC')
-  assert.equal(from.side, 'left')
-  const plan = planWire(from, to, cards)
-  assert.equal(plan.kind, 'ortho', '3V3 -> VCC must not cut across the board')
-  const points = plan.points
-  assert.deepEqual(points[0], from)
-  assert.deepEqual(points[points.length - 1], to)
-  for (const [a, b] of segments(points)) {
-    for (const card of cards) assert.equal(crossesCard(a, b, card), false, `segment ${JSON.stringify([a, b])} crosses ${JSON.stringify(card)}`)
-  }
-  // Leaves the pin sideways, then goes up or down past the card.
-  assert.equal(points[1].y, from.y)
-  assert.ok(points[1].x < from.x)
-  assert.ok(points.slice(1, -1).some(point => point.y < board.at[1] || point.y > board.at[1] + 60))
-  const d = pathOf(plan)
-  assert.match(d, /^M /)
-  assert.match(d, / Q /, 'detours get rounded corners')
-  assert.ok(d.endsWith(`L ${to.x} ${to.y}`))
-}
-
-// 2. When nothing is in the way the wire stays a plain curve: no need to walk
-//    around the outside of both cards.
-{
-  const { anchors, cards } = scene([board, buzzer])
-  const from = anchors.get('mcu:GPIO9')
-  const to = anchors.get('buzzer:VCC')
-  const plan = planWire(from, to, cards)
-  assert.equal(plan.kind, 'curve')
-  assert.match(pathOf(plan), / C /)
-}
-
-// 3. Nets sharing a channel are staggered, so two of them do not overlap.
-{
-  const { anchors, cards } = scene([board, buzzer])
-  const from = anchors.get('mcu:3V3')
-  const to = anchors.get('buzzer:VCC')
-  const first = planWire(from, to, cards, 0)
-  const second = planWire(from, to, cards, 1)
-  const laneOf = plan => plan.points[2].y
-  assert.notEqual(laneOf(first), laneOf(second))
-}
-
-// 4. `scene` exposes one anchor per pin and one rectangle per card.
-{
-  const { anchors, cards } = scene([board, buzzer])
-  assert.equal(anchors.size, 6)
-  assert.equal(cards.length, 2)
-  assert.equal(cards[0].w, 210)
+  const { anchors } = scene([board, buzzer])
+  assert.equal(anchors.get('mcu:3V3').side, 'left')
+  assert.equal(anchors.get('mcu:3V3').x, 291)
   assert.equal(anchors.get('buzzer:VCC').x, 646)
-  assert.equal(anchors.get('buzzer:VCC').y, 433)
+  const flipped = scene([board, { ...buzzer, flip: true }]).anchors
+  assert.equal(flipped.get('buzzer:VCC').side, 'right')
+  assert.equal(flipped.get('buzzer:VCC').x, 646 + 210)
+  // A pin moved to the other edge by hand lands there too.
+  const manual = scene([{ ...buzzer, pins: buzzer.pins.map(pin => ({ ...pin, side: 'right' })) }]).anchors
+  assert.equal(manual.get('buzzer:GND').x, 646 + 210)
+  assert.equal(sideOf({ ...buzzer, flip: true }, buzzer.pins[0]), 'right')
 }
 
-// 5. A whole net becomes one path string, whatever its length.
+// 2. A wire leaves its pin sideways: both control points are pushed out of the
+//    card the pin sits on.
 {
-  const { anchors, cards } = scene([board, buzzer])
-  const two = wirePath(anchors, { nodes: ['mcu:3V3', 'buzzer:VCC'] }, cards, 0)
-  assert.match(two, /^M /)
-  const three = wirePath(anchors, { nodes: ['mcu:3V3', 'buzzer:VCC', 'buzzer:I/O'] }, cards, 0)
-  assert.equal(three.match(/M /g).length, 2)
-  assert.equal(wirePath(anchors, { nodes: ['mcu:3V3'] }, cards), '')
-  assert.equal(wirePath(anchors, { nodes: ['mcu:3V3', 'nope:pin'] }, cards), '')
+  const { anchors } = scene([board, buzzer])
+  const from = anchors.get('mcu:3V3')
+  const to = anchors.get('buzzer:VCC')
+  const d = curvePath(from, to)
+  const numbers = d.replace('M ', '').replace('C ', '').split(/[ ,]+/).map(Number)
+  const [c1x, c1y, c2x, c2y] = numbers.slice(2)
+  assert.ok(c1x < from.x, 'left pin leaves to the left')
+  assert.equal(c1y, from.y)
+  assert.ok(c2x < to.x, 'target left pin is entered from the left')
+  assert.equal(c2y, to.y)
+  assert.match(d, /^M 291 /)
 }
 
-// 6. Mirroring the part puts its pins on the near edge, so the same wire turns
-//    into a short curve instead of a loop around the card.
+// 3. A net with several pins is a tree of segments, not a star.
 {
-  const mirrored = scene([board, { ...buzzer, at: [-27, 389], flip: true }])
-  const pin = mirrored.anchors.get('buzzer:VCC')
-  assert.equal(pin.side, 'right')
-  assert.equal(pin.x, -27 + 210)
-  const plan = planWire(mirrored.anchors.get('mcu:3V3'), pin, mirrored.cards)
-  assert.equal(plan.kind, 'curve')
-
-  const facing = scene([board, { ...buzzer, at: [-27, 389] }])
-  const wrapped = planWire(facing.anchors.get('mcu:3V3'), facing.anchors.get('buzzer:VCC'), facing.cards)
-  assert.equal(wrapped.kind, 'ortho')
+  const points = [
+    { x: 0, y: 0, side: 'left' },
+    { x: 100, y: 0, side: 'left' },
+    { x: 200, y: 0, side: 'left' },
+  ]
+  assert.equal(spanningSegments(points).length, 2)
+  const { anchors } = scene([board, buzzer, { ...board, id: 'mcu2' }])
+  const d = wirePath(anchors, { nodes: ['mcu:3V3', 'buzzer:VCC', 'buzzer:GND'] })
+  assert.equal(d.match(/M /g).length, 2)
+  assert.equal(wirePath(anchors, { nodes: ['mcu:3V3'] }), '')
+  assert.equal(wirePath(anchors, { nodes: ['mcu:3V3', 'nope:x'] }), '')
 }
 
-// 7. Orientation is guessed from the wiring: a module turns its pins towards
-//    the parts it talks to, and an explicit flip wins over the guess.
+// 4. Orientation is guessed from the wiring, never overriding a hand layout.
 {
   const left = { ...buzzer, at: [-27, 389] }
   const nets = [
@@ -161,50 +117,17 @@ function segments(points) {
   assert.equal(autoMirrors([board, { ...buzzer, at: [646, 385] }], nets).get('buzzer'), false)
   assert.equal(autoMirrors([board, left], []).has('buzzer'), false, 'an unwired module keeps its template orientation')
   assert.equal(autoMirrors([board, left], nets).has('mcu'), false, 'boards keep their official layout')
-
+  assert.equal(
+    autoMirrors([board, { ...left, pinsManual: true }], nets).has('buzzer'),
+    false,
+    'a hand-placed pin layout is not flipped',
+  )
   const guessed = autoMirrors([board, left], nets)
   assert.equal(oriented(left, guessed).flip, true)
   assert.equal(oriented({ ...left, flip: false }, guessed).flip, false, 'explicit wins')
-  assert.equal(oriented({ ...left, flip: true }, new Map()).flip, true)
-
-  // The guess is what makes the wrap disappear: same document, one flip.
-  const unflipped = scene([board, oriented({ ...left, flip: false }, guessed)])
-  const flipped = scene([board, oriented(left, guessed)])
-  assert.equal(planWire(unflipped.anchors.get('mcu:3V3'), unflipped.anchors.get('buzzer:VCC'), unflipped.cards).kind, 'ortho')
-  assert.equal(planWire(flipped.anchors.get('mcu:3V3'), flipped.anchors.get('buzzer:VCC'), flipped.cards).kind, 'curve')
 }
 
-// 8. A wide module is drawn in two columns: supply on the left, the rest on
-//    the right, so the card is shorter and wires can leave on either side.
-{
-  const pins = ['VCC', 'GND', 'IN1', 'IN2', 'IN3', 'IN4', 'OUTA1', 'OUTA2', 'OUTB1', 'OUTB2']
-    .map((name, index) => ({ name, role: index < 2 ? (index === 0 ? 'power' : 'ground') : 'bidir', side: 'left' }))
-  const driver = { id: 'drv', kind: 'module', model: 'mx1508', at: [0, 0], pins }
-  assert.equal(isSplit(driver), true)
-  const sides = columns(driver)
-  assert.equal(sides.get('VCC'), 'left')
-  assert.equal(sides.get('GND'), 'left')
-  assert.equal(sides.get('IN1'), 'right')
-  assert.equal(sides.get('OUTB2'), 'right')
-  const { cards } = scene([driver])
-  const oneColumn = 30 + 8 + 10 * 20 + 10
-  assert.ok(cards[0].h < oneColumn, 'split card is shorter than a ten-row strip')
-
-  // A small module keeps one column; a hand-written part that mixes sides is
-  // left alone even when it is wide.
-  assert.equal(isSplit({ ...driver, pins: pins.slice(0, 3) }), false)
-  const mixed = { ...driver, pins: pins.map((pin, index) => ({ ...pin, side: index % 2 === 0 ? 'left' : 'right' })) }
-  assert.equal(isSplit(mixed), false)
-  assert.equal(columns(mixed).get('IN1'), 'left')
-  assert.equal(columns(mixed).get('GND'), 'right')
-
-  // No supply pins: fall back to splitting the list in half.
-  const passive = { ...driver, pins: pins.map(pin => ({ ...pin, role: 'passive' })) }
-  assert.equal(columns(passive).get('IN3'), 'left')
-  assert.equal(columns(passive).get('IN4'), 'right')
-}
-
-// 9. "一键整理" pulls wired parts together, keeps cards apart, and is
+// 5. "一键整理" pulls wired parts together, keeps cards apart, and is
 //    deterministic.
 {
   const pin = { name: 'A', role: 'passive', side: 'left' }
@@ -227,8 +150,7 @@ function segments(points) {
   }
   const span = Math.max(...placed.map(part => part.at[0])) - Math.min(...placed.map(part => part.at[0]))
   assert.ok(span < 1400, 'the layout gets compact')
-  const again = tidyParts(parts, nets)
-  assert.deepEqual([...again], [...positions], 'same input, same layout')
+  assert.deepEqual([...tidyParts(parts, nets)], [...positions], 'same input, same layout')
 }
 
 console.log('route: ok')
