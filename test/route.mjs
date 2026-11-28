@@ -127,18 +127,29 @@ const buzzer = {
   assert.equal(oriented({ ...left, flip: false }, guessed).flip, false, 'explicit wins')
 }
 
-// 5. "一键整理" pulls wired parts together, keeps cards apart, and is
-//    deterministic.
+// 5. "一键整理" anchors the board, puts each part on the side of the pin it is
+//    wired to, lines the pins up, and never lets cards overlap.
 {
-  const pin = { name: 'A', role: 'passive', side: 'left' }
-  const make = (id, at) => ({ id, kind: 'module', at, pins: [pin, { ...pin, name: 'B' }] })
-  const parts = [make('a', [0, 0]), make('b', [1500, 0]), make('c', [3000, 800])]
-  const nets = [{ nodes: ['a:A', 'b:A'] }, { nodes: ['b:A', 'c:A'] }]
+  const mcu = {
+    id: 'mcu',
+    kind: 'board',
+    at: [500, 300],
+    pins: [
+      { name: '3V3', role: 'power', side: 'left' },
+      { name: 'GPIO4', role: 'bidir', side: 'right' },
+    ],
+  }
+  const left = { id: 'left', kind: 'module', at: [0, 0], pins: [{ name: 'VCC', role: 'power', side: 'left' }] }
+  const right = { id: 'right', kind: 'module', at: [0, 0], pins: [{ name: 'SIG', role: 'bidir', side: 'left' }] }
+  const nets = [{ nodes: ['mcu:3V3', 'left:VCC'] }, { nodes: ['mcu:GPIO4', 'right:SIG'] }]
 
-  const positions = tidyParts(parts, nets)
-  assert.equal(positions.size, 3)
-  const placed = parts.map(part => ({ ...part, at: positions.get(part.id) }))
-  const { cards } = scene(placed)
+  const positions = tidyParts([mcu, left, right], nets)
+  assert.deepEqual(positions.get('mcu'), [500, 300], 'the board never moves')
+  const placed = [mcu, left, right].map(part => ({ ...part, at: positions.get(part.id) }))
+  const { anchors, cards } = scene(placed)
+  assert.ok(anchors.get('left:VCC').x < anchors.get('mcu:3V3').x, 'a part wired to a left pin stays left')
+  assert.ok(anchors.get('right:SIG').x > anchors.get('mcu:GPIO4').x, 'a part wired to a right pin goes right')
+  assert.ok(Math.abs(anchors.get('left:VCC').y - anchors.get('mcu:3V3').y) < 40, 'the two pins line up')
   for (let i = 0; i < cards.length; i += 1) {
     for (let j = i + 1; j < cards.length; j += 1) {
       const a = cards[i]
@@ -148,9 +159,21 @@ const buzzer = {
       assert.ok(apart, `cards ${i} and ${j} do not overlap`)
     }
   }
+  assert.deepEqual([...tidyParts([mcu, left, right], nets)], [...positions], 'same input, same layout')
+}
+
+// 6. Without a board, the most connected part is the anchor and everything else
+//    chains off it.
+{
+  const pin = { name: 'A', role: 'passive', side: 'left' }
+  const make = (id, at) => ({ id, kind: 'module', at, pins: [pin, { ...pin, name: 'B' }] })
+  const parts = [make('a', [0, 0]), make('b', [1500, 0]), make('c', [3000, 800])]
+  const nets = [{ nodes: ['a:A', 'b:A'] }, { nodes: ['b:A', 'c:A'] }]
+  const positions = tidyParts(parts, nets)
+  assert.deepEqual(positions.get('b'), [1500, 0], 'the hub part stays put')
+  const placed = parts.map(part => ({ ...part, at: positions.get(part.id) }))
   const span = Math.max(...placed.map(part => part.at[0])) - Math.min(...placed.map(part => part.at[0]))
   assert.ok(span < 1400, 'the layout gets compact')
-  assert.deepEqual([...tidyParts(parts, nets)], [...positions], 'same input, same layout')
 }
 
 console.log('route: ok')

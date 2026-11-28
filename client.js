@@ -349,56 +349,116 @@ window.__ModuleLoader__.load({
     }
 
     // ---- Auto layout --------------------------------------------------------
-    // "一键整理" relaxes the arrangement instead of rebuilding it: every net pulls
-    // its parts together, cards push each other apart, and whatever grouping the
-    // user already made survives. Pure geometry, so the tests cover it.
+    // "一键整理" builds a schematic around the board: the board never moves (its
+    // pins and their edges are physical), every other part is placed on the side
+    // of the pin it is wired to and lined up with that pin, and a short pass then
+    // pushes overlapping cards apart. Pure geometry, so the tests cover it.
 
-    const TIDY = { rest: 320, margin: 56, rounds: 240, grid: 10 }
+    const TIDY = { gap: 90, margin: 56, rounds: 90, grid: 10 }
+
+    const ownerOf = node => node.slice(0, node.lastIndexOf(':'))
+
+    /** Where a parent's pins and a child's pins sit, relative to their cards. */
+    function contactOf(anchors, nets, parent, child) {
+      let px = 0
+      let py = 0
+      let cx = 0
+      let cy = 0
+      let count = 0
+      let side = 'right'
+      for (const net of nets) {
+        const nodes = net.nodes
+        const mine = nodes.filter(node => ownerOf(node) === parent.id)
+        if (mine.length === 0) continue
+        if (!nodes.some(node => ownerOf(node) === child.id)) continue
+        for (const node of nodes) {
+          const anchor = anchors.get(node)
+          if (anchor === undefined) continue
+          if (ownerOf(node) === parent.id) {
+            px += anchor.x - parent.at[0]
+            py += anchor.y - parent.at[1]
+            side = anchor.side
+          } else if (ownerOf(node) === child.id) {
+            cx += anchor.x - child.at[0]
+            cy += anchor.y - child.at[1]
+          }
+        }
+        count += 1
+      }
+      if (count === 0) return undefined
+      return { px: px / count, py: py / count, cx: cx / count, cy: cy / count, side }
+    }
 
     function tidyParts(parts, nets) {
       if (parts.length === 0) return new Map()
-      const boxes = parts.map(part => ({
-        id: part.id,
-        x: part.at[0],
-        y: part.at[1],
-        w: PART_W,
-        h: partHeight(part),
-      }))
-      const index = new Map(boxes.map((box, position) => [box.id, position]))
-      const links = []
+      const byId = new Map(parts.map(part => [part.id, part]))
+      const anchors = scene(parts).anchors
+      // How much a net says about "these two belong together": a ground net
+      // touches everything, so it is a weak hint; a signal net is a strong one.
+      const importance = net => (net.kind === 'ground' ? 0.2 : net.kind === 'power' ? 0.6 : 1)
+      const edges = new Map()
       for (const net of nets) {
-        const owners = [...new Set(net.nodes.map(node => node.split(':')[0]))]
-          .map(id => index.get(id))
-          .filter(position => position !== undefined)
-        if (owners.length < 2) continue
-        const weight = 1 / (owners.length - 1)
+        const owners = [...new Set(net.nodes.map(ownerOf))].filter(id => byId.has(id))
+        const weight = importance(net)
         for (let a = 0; a < owners.length; a += 1) {
           for (let b = a + 1; b < owners.length; b += 1) {
-            links.push({ a: owners[a], b: owners[b], weight })
+            for (const [from, to] of [[owners[a], owners[b]], [owners[b], owners[a]]]) {
+              const row = edges.get(from) ?? new Map()
+              row.set(to, (row.get(to) ?? 0) + weight)
+              edges.set(from, row)
+            }
           }
         }
       }
-      for (let round = 0; round < TIDY.rounds; round += 1) {
-        const step = 1 - (round / TIDY.rounds) * 0.8
-        const drift = boxes.map(() => ({ x: 0, y: 0 }))
-        for (const link of links) {
-          const from = boxes[link.a]
-          const to = boxes[link.b]
-          const dx = (to.x + to.w / 2) - (from.x + from.w / 2)
-          const dy = (to.y + to.h / 2) - (from.y + from.h / 2)
-          const distance = Math.hypot(dx, dy) || 1
-          const pull = (distance - TIDY.rest) * 0.05 * link.weight * step
-          const ux = dx / distance
-          const uy = dy / distance
-          drift[link.a].x += ux * pull
-          drift[link.a].y += uy * pull
-          drift[link.b].x -= ux * pull
-          drift[link.b].y -= uy * pull
+      const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
+      // The board is the anchor; without one, the most connected part is.
+      const boards = parts.filter(part => part.kind === 'board')
+      const pool = boards.length > 0 ? boards : parts
+      const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
+
+      // A spanning tree grown from the anchor by the strongest link, so a module
+      // hangs off the part it actually talks to rather than off the ground net.
+      const placed = new Map([[hub.id, { x: hub.at[0], y: hub.at[1] }]])
+      const pending = new Set(parts.map(part => part.id).filter(id => id !== hub.id))
+      while (pending.size > 0) {
+        let best
+        for (const id of pending) {
+          for (const [other, weight] of (edges.get(id) ?? new Map()).entries()) {
+            if (!placed.has(other)) continue
+            if (best === undefined || weight > best.weight) best = { id, parent: other, weight }
+          }
         }
-        boxes.forEach((box, position) => {
-          box.x += drift[position].x
-          box.y += drift[position].y
+        if (best === undefined) break
+        const parent = byId.get(best.parent)
+        const child = byId.get(best.id)
+        const contact = contactOf(anchors, nets, parent, child)
+        const at = placed.get(parent.id)
+        if (contact === undefined) {
+          placed.set(child.id, { x: child.at[0], y: child.at[1] })
+          pending.delete(child.id)
+          continue
+        }
+        // A column further out on the side the shared pin faces, lined up pin to pin.
+        placed.set(child.id, {
+          x: contact.side === 'left' ? at.x - TIDY.gap - PART_W : at.x + PART_W + TIDY.gap,
+          y: at.y + contact.py - contact.cy,
         })
+        pending.delete(child.id)
+      }
+      for (const part of parts) {
+        if (!placed.has(part.id)) placed.set(part.id, { x: part.at[0], y: part.at[1] })
+      }
+
+      // Cards must not overlap; the hub never moves, so it pushes the others.
+      const boxes = parts.map(part => ({
+        id: part.id,
+        x: placed.get(part.id).x,
+        y: placed.get(part.id).y,
+        w: PART_W,
+        h: partHeight(part),
+      }))
+      for (let round = 0; round < TIDY.rounds; round += 1) {
+        let moved = false
         for (let a = 0; a < boxes.length; a += 1) {
           for (let b = a + 1; b < boxes.length; b += 1) {
             const from = boxes[a]
@@ -408,26 +468,36 @@ window.__ModuleLoader__.load({
             const across = (from.w + to.w) / 2 + TIDY.margin - Math.abs(dx)
             const down = (from.h + to.h) / 2 + TIDY.margin - Math.abs(dy)
             if (across <= 0 || down <= 0) continue
+            moved = true
+            const fixedFrom = from.id === hub.id
+            const fixedTo = to.id === hub.id
+            const shareFrom = fixedFrom ? 0 : fixedTo ? 1 : 0.5
+            const shareTo = fixedTo ? 0 : fixedFrom ? 1 : 0.5
             if (across < down) {
-              const shift = (across / 2) * 0.5 * step * (dx >= 0 ? 1 : -1)
-              from.x -= shift
-              to.x += shift
+              const dir = dx >= 0 ? 1 : -1
+              from.x -= (across / 2) * 2 * shareFrom * dir
+              to.x += (across / 2) * 2 * shareTo * dir
             } else {
-              const shift = (down / 2) * 0.5 * step * (dy >= 0 ? 1 : -1)
-              from.y -= shift
-              to.y += shift
+              const dir = dy >= 0 ? 1 : -1
+              from.y -= (down / 2) * 2 * shareFrom * dir
+              to.y += (down / 2) * 2 * shareTo * dir
             }
           }
         }
+        if (!moved) break
       }
-      const snapped = boxes.map(box => ({
-        id: box.id,
-        x: Math.round(box.x / TIDY.grid) * TIDY.grid,
-        y: Math.round(box.y / TIDY.grid) * TIDY.grid,
-      }))
-      const shiftX = Math.max(0, 40 - Math.min(...snapped.map(box => box.x)))
-      const shiftY = Math.max(0, 40 - Math.min(...snapped.map(box => box.y)))
-      return new Map(snapped.map(box => [box.id, [box.x + shiftX, box.y + shiftY]]))
+      const result = new Map()
+      for (const box of boxes) {
+        if (box.id === hub.id) {
+          result.set(box.id, [hub.at[0], hub.at[1]])
+          continue
+        }
+        result.set(box.id, [
+          Math.round(box.x / TIDY.grid) * TIDY.grid,
+          Math.round(box.y / TIDY.grid) * TIDY.grid,
+        ])
+      }
+      return result
     }
 
     function contentBounds(doc) {
