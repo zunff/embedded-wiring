@@ -1,7 +1,7 @@
 /**
  * Geometry test: the browser half is a loader bundle, not an ES module, so it is
  * loaded here with a stub loader and a stub `react`. What is checked is the pure
- * geometry — pin anchors, wire shape and the tidy layout.
+ * geometry — pin anchors, wire shape, the tidy layout and its pin splitting.
  *
  * Run with `node test/route.mjs` from the package directory.
  *
@@ -127,8 +127,20 @@ const buzzer = {
   assert.equal(oriented({ ...left, flip: false }, guessed).flip, false, 'explicit wins')
 }
 
-// 5. "一键整理" anchors the board, puts each part on the side of the pin it is
-//    wired to, lines the pins up, and never lets cards overlap.
+const cardsApart = cards => {
+  for (let i = 0; i < cards.length; i += 1) {
+    for (let j = i + 1; j < cards.length; j += 1) {
+      const a = cards[i]
+      const b = cards[j]
+      const apart = a.x + a.w + 8 <= b.x || b.x + b.w + 8 <= a.x
+        || a.y + a.h + 8 <= b.y || b.y + b.h + 8 <= a.y
+      assert.ok(apart, `cards ${i} and ${j} do not overlap`)
+    }
+  }
+}
+
+// 5. "一键整理" keeps the board where it is, keeps a card on the side it was
+//    drawn on, snaps it into a column and never lets cards overlap.
 {
   const mcu = {
     id: 'mcu',
@@ -139,35 +151,95 @@ const buzzer = {
       { name: 'GPIO4', role: 'bidir', side: 'right' },
     ],
   }
-  const left = { id: 'left', kind: 'module', at: [0, 0], pins: [{ name: 'VCC', role: 'power', side: 'left' }] }
-  const right = { id: 'right', kind: 'module', at: [0, 0], pins: [{ name: 'SIG', role: 'bidir', side: 'left' }] }
+  const left = { id: 'left', kind: 'module', at: [100, 300], pins: [{ name: 'VCC', role: 'power', side: 'left' }] }
+  const right = { id: 'right', kind: 'module', at: [900, 300], pins: [{ name: 'SIG', role: 'bidir', side: 'left' }] }
   const nets = [{ nodes: ['mcu:3V3', 'left:VCC'] }, { nodes: ['mcu:GPIO4', 'right:SIG'] }]
 
-  const { positions, flips } = tidyParts([mcu, left, right], nets)
+  const { positions, sides } = tidyParts([mcu, left, right], nets)
   assert.deepEqual(positions.get('mcu'), [500, 300], 'the board never moves')
+  assert.equal(sides.has('mcu'), false, 'a board keeps its physical pin layout')
+  assert.equal(sides.has('left'), false, 'a one-pin part has no second edge to choose')
   const placed = [mcu, left, right].map(part => ({ ...part, at: positions.get(part.id) }))
   const { anchors, cards } = scene(placed)
-  assert.ok(anchors.get('left:VCC').x < anchors.get('mcu:3V3').x, 'a part wired to a left pin stays left')
-  assert.ok(anchors.get('right:SIG').x > anchors.get('mcu:GPIO4').x, 'a part wired to a right pin goes right')
-  assert.ok(Math.abs(anchors.get('left:VCC').y - anchors.get('mcu:3V3').y) < 40, 'the two pins line up')
-  // A part on the board's left turns its pins towards the board.
-  assert.equal(flips.get('left'), true)
-  assert.equal(flips.get('right'), false)
-  for (let i = 0; i < cards.length; i += 1) {
-    for (let j = i + 1; j < cards.length; j += 1) {
-      const a = cards[i]
-      const b = cards[j]
-      const apart = a.x + a.w + 8 <= b.x || b.x + b.w + 8 <= a.x
-        || a.y + a.h + 8 <= b.y || b.y + b.h + 8 <= a.y
-      assert.ok(apart, `cards ${i} and ${j} do not overlap`)
-    }
-  }
+  assert.ok(anchors.get('left:VCC').x < anchors.get('mcu:3V3').x, 'a part drawn on the left stays left')
+  assert.ok(anchors.get('right:SIG').x > anchors.get('mcu:GPIO4').x, 'a part drawn on the right stays right')
+  assert.equal(anchors.get('left:VCC').x, Math.round((500 - (210 + 96)) / 10) * 10, 'columns sit one gap apart')
+  cardsApart(cards)
   const again = tidyParts([mcu, left, right], nets)
   assert.deepEqual([...again.positions], [...positions], 'same input, same layout')
-  assert.deepEqual([...again.flips], [...flips], 'same input, same orientations')
+  assert.deepEqual([...again.sides], [...sides], 'same input, same sides')
 }
 
-// 6. Without a board, the most connected part is the anchor and everything else
+// 6. A module wired both ways has its pins split between its edges: the battery
+//    side of a boost converter ends up on the left edge, its motor side on the
+//    right, so no wire has to wrap around the card.
+{
+  const pin = (name, role, side) => ({ name, role, side })
+  const boost = {
+    id: 'boost',
+    kind: 'module',
+    at: [420, 300],
+    pins: [
+      pin('VIN+', 'power', 'right'),
+      pin('VIN-', 'ground', 'right'),
+      pin('OUT-', 'ground', 'right'),
+      pin('OUT+', 'power', 'right'),
+    ],
+  }
+  const battery = {
+    id: 'battery',
+    kind: 'module',
+    at: [40, 300],
+    pins: [pin('+', 'power', 'left'), pin('-', 'ground', 'left')],
+  }
+  const motor = {
+    id: 'motor',
+    kind: 'module',
+    at: [820, 300],
+    pins: [pin('M1', 'passive', 'left'), pin('M2', 'passive', 'left')],
+  }
+  const nets = [
+    { kind: 'power', nodes: ['battery:+', 'boost:VIN+'] },
+    { kind: 'ground', nodes: ['battery:-', 'boost:VIN-'] },
+    { kind: 'power', nodes: ['boost:OUT+', 'motor:M1'] },
+    { kind: 'ground', nodes: ['boost:OUT-', 'motor:M2'] },
+  ]
+  const { positions, sides } = tidyParts([boost, battery, motor], nets)
+  assert.deepEqual(
+    sides.get('boost'),
+    { 'VIN+': 'left', 'VIN-': 'left', 'OUT-': 'right', 'OUT+': 'right' },
+    'the input half goes left, the output half right',
+  )
+  const placed = [boost, battery, motor].map(part => ({
+    ...part,
+    at: positions.get(part.id),
+    pins: part.pins.map(item => ({ ...item, side: sides.get(part.id)?.[item.name] ?? item.side })),
+  }))
+  const { anchors, cards } = scene(placed)
+  assert.ok(anchors.get('battery:+').x < anchors.get('boost:VIN+').x, 'the battery stays left')
+  assert.ok(anchors.get('motor:M1').x > anchors.get('boost:OUT+').x, 'the motor stays right')
+  assert.equal(anchors.get('boost:VIN+').side, 'left', 'VIN is drawn on the left edge')
+  assert.equal(anchors.get('boost:OUT+').side, 'right', 'OUT is drawn on the right edge')
+  cardsApart(cards)
+  const again = tidyParts([boost, battery, motor], nets)
+  assert.deepEqual([...again.sides], [...sides], 'the split is stable')
+}
+
+// 7. A part the user arranged by hand is theirs: tidy moves the card but leaves
+//    the edges alone. An explicit pin list from the agent is not a hand layout.
+{
+  const pin = name => ({ name, role: 'passive', side: 'left' })
+  const hub = { id: 'hub', kind: 'module', at: [400, 300], pins: [pin('A'), pin('B')] }
+  const wired = { id: 'wired', kind: 'module', at: [0, 0], pinsHand: true, pinsManual: true, pins: [pin('P'), pin('Q')] }
+  const nets = [{ nodes: ['hub:A', 'wired:P'] }]
+  const { sides } = tidyParts([hub, wired], nets)
+  assert.equal(sides.has('wired'), false)
+  const fromAgent = { id: 'agent', kind: 'module', at: [750, 300], pinsManual: true, pins: [pin('P'), pin('Q')] }
+  const both = tidyParts([hub, fromAgent], [{ nodes: ['hub:B', 'agent:P'] }]).sides
+  assert.ok(both.has('agent'), 'a part whose pins came from a model/photo can still split')
+}
+
+// 8. Without a board, the most connected part is the anchor and everything else
 //    chains off it.
 {
   const pin = { name: 'A', role: 'passive', side: 'left' }

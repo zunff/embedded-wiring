@@ -501,7 +501,7 @@ export function apply(ctx, config) {
 
   const MUTATING = new Set([
     'add_part', 'update_part', 'remove_part', 'connect', 'disconnect', 'unlink',
-    'set_net', 'move', 'flip', 'set_meta', 'propose', 'apply_pending', 'discard_pending',
+    'set_net', 'move', 'flip', 'set_pin_sides', 'set_meta', 'propose', 'apply_pending', 'discard_pending',
   ])
 
   /** Turn one tool call into the op batch the page would post. */
@@ -526,6 +526,8 @@ export function apply(ctx, config) {
         return [{ type: 'move', id: args.id, at: args.at }]
       case 'flip':
         return [{ type: 'flip', id: args.id, flip: args.flipAuto === true ? null : args.flip !== false }]
+      case 'set_pin_sides':
+        return [{ type: 'set_pin_sides', id: args.id, sides: args.sides }]
       case 'set_meta':
         return [{ type: 'set_meta', patch: args.patch }]
       case 'propose':
@@ -548,6 +550,7 @@ export function apply(ctx, config) {
       'Nodes are "partId:pinName", for example "mcu:GPIO4" or "dht:DATA".',
       'Board models: esp32-devkitc, esp32-c3-devkitc-02, esp32-c3-devkitm-1, esp32-c3-supermini, esp32-s3-devkitc-1. Module models come from the library (dht22, bme280, ssd1306, sg90, relay, ...).',
       'Action "flip" mirrors a part so its pins face the other edge; it is layout only and every wire stays attached. The page already orients a module towards the parts it is wired to, so use flip only to override that guess (or flipAuto: true to clear the override).',
+      'Action "set_pin_sides" moves named pins between the two edges without touching the wiring; use it when the user wants a module drawn with its input connectors on one edge and its outputs on the other. The page\'s own "一键整理" already splits pins by which side their wires leave towards.',
       'When the user sends a photo of a module: identify it, then call add_part with an explicit "pins" array (name, role, volt, maxVolt, side) and part.source "photo"; keep it unverified until the user confirms the pin order on the wiring page, and say what you assumed.',
       'Changes that the user should see and confirm first go through action "propose" with the same ops; the user applies them on the wiring page, or you call "apply_pending" when they say so.',
       'Electrical problems do not block a write: they come back as diagnostics with severity error/warning.',
@@ -559,7 +562,7 @@ export function apply(ctx, config) {
           type: 'string',
           enum: [
             'list', 'read', 'check', 'add_part', 'update_part', 'remove_part', 'connect',
-            'disconnect', 'unlink', 'set_net', 'move', 'flip', 'set_meta',
+            'disconnect', 'unlink', 'set_net', 'move', 'flip', 'set_pin_sides', 'set_meta',
             'propose', 'apply_pending', 'discard_pending',
           ],
           description: 'list/read/check do not modify a file; every other action writes.',
@@ -589,7 +592,7 @@ export function apply(ctx, config) {
         },
         id: {
           type: 'string',
-          description: 'update_part/remove_part/move/flip: part id. apply_pending/discard_pending: pending id (omit for all).',
+          description: 'update_part/remove_part/move/flip/set_pin_sides: part id. apply_pending/discard_pending: pending id (omit for all).',
         },
         flip: {
           type: 'boolean',
@@ -598,6 +601,11 @@ export function apply(ctx, config) {
         flipAuto: {
           type: 'boolean',
           description: 'flip: true clears the override so the page orients the part from where its neighbours are.',
+        },
+        sides: {
+          type: 'object',
+          additionalProperties: true,
+          description: 'set_pin_sides: { pinName: "left" | "right" } — which edge each named pin is drawn on. Wires and pin order do not change; useful for a module whose input and output connectors face opposite ways (the page does this itself when tidying).',
         },
         patch: {
           type: 'object',

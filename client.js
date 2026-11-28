@@ -93,7 +93,6 @@ window.__ModuleLoader__.load({
 .ew-pinrow code{font-size:10.5px;min-width:46px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .ew-pinrow .ew-badge{flex:1 1 auto;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ew-pin-btn{padding:0 4px;font-size:9.5px;line-height:15px;min-width:16px}
-.ew-pin-actions{display:flex;gap:4px;margin:4px 0 2px;flex-wrap:wrap}
 .ew-node code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10.5px}
 .ew-x{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#8b909a);cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
 .ew-x:hover{color:var(--dsw-alias-state-error-primary,#e03131)}
@@ -350,57 +349,47 @@ window.__ModuleLoader__.load({
     }
 
     // ---- Auto layout --------------------------------------------------------
-    // "一键整理" builds a schematic around the board: the board never moves (its
-    // pins and their edges are physical), every other part is placed on the side
-    // of the pin it is wired to and lined up with that pin, and a short pass then
-    // pushes overlapping cards apart. Pure geometry, so the tests cover it.
+    // "一键整理" keeps the shape of the drawing and makes it readable: each
+    // module's pins are split between its two edges the way a real header is —
+    // whatever talks to the left shows on the left edge, whatever talks to the
+    // right shows on the right, and an unwired pin follows its neighbour in the
+    // pin list — cards snap into columns beside the board in the same order they
+    // already have, and cards sharing a column are stacked so that no two
+    // overlap. The board never moves, and a part the user split by hand keeps
+    // the edges it was given. Pure geometry, so the tests cover it.
 
-    const TIDY = { gap: 90, margin: 56, rounds: 90, grid: 10 }
-
-    const ownerOf = node => node.slice(0, node.lastIndexOf(':'))
-
-    /** Where a parent's pins and a child's pins sit, relative to their cards. */
-    function contactOf(anchors, nets, parent, child) {
-      let px = 0
-      let py = 0
-      let cx = 0
-      let cy = 0
-      let count = 0
-      let side = 'right'
-      for (const net of nets) {
-        const nodes = net.nodes
-        const mine = nodes.filter(node => ownerOf(node) === parent.id)
-        if (mine.length === 0) continue
-        if (!nodes.some(node => ownerOf(node) === child.id)) continue
-        for (const node of nodes) {
-          const anchor = anchors.get(node)
-          if (anchor === undefined) continue
-          if (ownerOf(node) === parent.id) {
-            px += anchor.x - parent.at[0]
-            py += anchor.y - parent.at[1]
-            side = anchor.side
-          } else if (ownerOf(node) === child.id) {
-            cx += anchor.x - child.at[0]
-            cy += anchor.y - child.at[1]
-          }
-        }
-        count += 1
-      }
-      if (count === 0) return undefined
-      return { px: px / count, py: py / count, cx: cx / count, cy: cy / count, side }
+    const TIDY = {
+      gap: 96,      // space between two columns
+      row: 28,      // space between two cards in one column
+      grid: 10,
+      columns: 6,
+      cluster: 150, // neighbours closer than this in x share a column
+      tie: 70,      // a neighbour this close in x says nothing about the edge
     }
 
-    function tidyParts(parts, nets) {
-      if (parts.length === 0) return new Map()
-      const byId = new Map(parts.map(part => [part.id, part]))
-      const anchors = scene(parts).anchors
-      // How much a net says about "these two belong together": a ground net
-      // touches everything, so it is a weak hint; a signal net is a strong one.
-      const importance = net => (net.kind === 'ground' ? 0.2 : net.kind === 'power' ? 0.6 : 1)
+    const ownerOf = node => node.slice(0, node.lastIndexOf(':'))
+    const pinNameOf = node => node.slice(node.lastIndexOf(':') + 1)
+
+    // A ground net touches almost everything, so it says little about who a part
+    // belongs next to; a signal net says a lot.
+    const netWeight = net => (net.kind === 'ground' ? 0.35 : net.kind === 'power' ? 0.7 : 1)
+
+    /** A part as the layout wants to draw it: planned edges folded in, flip kept. */
+    function withSides(part, edge) {
+      if (edge === undefined) return part
+      return {
+        ...part,
+        pins: part.pins.map(pin => (edge[pin.name] === undefined ? pin : { ...pin, side: edge[pin.name] })),
+      }
+    }
+
+    /** How strongly each part is tied to the others, for picking the anchor. */
+    function weightsOf(parts, nets) {
+      const known = new Set(parts.map(part => part.id))
       const edges = new Map()
       for (const net of nets) {
-        const owners = [...new Set(net.nodes.map(ownerOf))].filter(id => byId.has(id))
-        const weight = importance(net)
+        const owners = [...new Set(net.nodes.map(ownerOf))].filter(id => known.has(id))
+        const weight = netWeight(net)
         for (let a = 0; a < owners.length; a += 1) {
           for (let b = a + 1; b < owners.length; b += 1) {
             for (const [from, to] of [[owners[a], owners[b]], [owners[b], owners[a]]]) {
@@ -411,104 +400,143 @@ window.__ModuleLoader__.load({
           }
         }
       }
-      const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
-      // The board is the anchor; without one, the most connected part is.
-      const boards = parts.filter(part => part.kind === 'board')
-      const pool = boards.length > 0 ? boards : parts
-      const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
+      return edges
+    }
 
-      // A spanning tree grown from the anchor by the strongest link, so a module
-      // hangs off the part it actually talks to rather than off the ground net.
-      const placed = new Map([[hub.id, { x: hub.at[0], y: hub.at[1] }]])
-      const flips = new Map()
-      const pending = new Set(parts.map(part => part.id).filter(id => id !== hub.id))
-      while (pending.size > 0) {
-        let best
-        for (const id of pending) {
-          for (const [other, weight] of (edges.get(id) ?? new Map()).entries()) {
-            if (!placed.has(other)) continue
-            if (best === undefined || weight > best.weight) best = { id, parent: other, weight }
-          }
-        }
-        if (best === undefined) break
-        const parent = byId.get(best.parent)
-        const child = byId.get(best.id)
-        const contact = contactOf(anchors, nets, parent, child)
-        const at = placed.get(parent.id)
-        if (contact === undefined) {
-          placed.set(child.id, { x: child.at[0], y: child.at[1] })
-          pending.delete(child.id)
-          continue
-        }
-        // A column further out on the side the shared pin faces, lined up pin to pin.
-        placed.set(child.id, {
-          x: contact.side === 'left' ? at.x - TIDY.gap - PART_W : at.x + PART_W + TIDY.gap,
-          y: at.y + contact.py - contact.cy,
-        })
-        // A part hanging to the left of its parent should show its pins on its
-        // own right edge, i.e. facing the parent. A hand-arranged pin layout is
-        // left exactly as the user made it.
-        const uniform = new Set(child.pins.map(pin => templateSide(child, pin))).size === 1
-        if (child.kind !== 'board' && child.pinsManual !== true && uniform && child.pins.length > 0) {
-          const showing = templateSide(child, child.pins[0])
-          const wanted = contact.side === 'left' ? 'right' : 'left'
-          flips.set(child.id, showing !== wanted)
-        }
-        pending.delete(child.id)
-      }
+    /**
+     * Decide which edge every pin shows on, given the drawing: a pin whose nets
+     * leave towards the left half of its neighbourhood belongs on the left edge.
+     * A pin with no wire copies the nearest decided pin in the part's own pin
+     * order, so one header keeps its pieces together. Boards are physical and
+     * keep their official layout; a hand-split part is the user's, not a guess.
+     *
+     * Sides come back raw: `flip` still mirrors the whole symbol on screen.
+     */
+    function assignSides(parts, nets, positions) {
+      const placed = new Map()
       for (const part of parts) {
-        if (!placed.has(part.id)) placed.set(part.id, { x: part.at[0], y: part.at[1] })
+        const at = positions.get(part.id)
+        placed.set(part.id, at === undefined ? part : { ...part, at })
+      }
+      const centre = id => placed.get(id).at[0] + PART_W / 2
+      // How strongly every pin is pulled towards other cards, and where to.
+      const pull = new Map()
+      for (const net of nets) {
+        const weight = netWeight(net)
+        if (net.nodes.filter(node => placed.has(ownerOf(node))).length < 2) continue
+        for (const node of net.nodes) {
+          if (!placed.has(ownerOf(node))) continue
+          let sum = 0
+          let total = 0
+          for (const other of net.nodes) {
+            if (other === node || !placed.has(ownerOf(other))) continue
+            sum += centre(ownerOf(other)) * weight
+            total += weight
+          }
+          if (total === 0) continue
+          const row = pull.get(node) ?? { sum: 0, weight: 0 }
+          row.sum += sum
+          row.weight += total
+          pull.set(node, row)
+        }
+      }
+      const sides = new Map()
+      for (const part of placed.values()) {
+        if (part.kind === 'board') continue
+        if (part.pins.length < 2) continue
+        if (part.pinsHand === true) continue
+        const decided = new Map()
+        for (const pin of part.pins) {
+          const row = pull.get(`${part.id}:${pin.name}`)
+          if (row === undefined || row.weight <= 0) continue
+          const delta = row.sum / row.weight - centre(part.id)
+          // Straight above or below says nothing about a left/right edge.
+          if (Math.abs(delta) < TIDY.tie) continue
+          decided.set(pin.name, delta < 0 ? 'left' : 'right')
+        }
+        if (decided.size === 0) continue
+        const edge = { ...Object.fromEntries(decided) }
+        for (let index = 0; index < part.pins.length; index += 1) {
+          const pin = part.pins[index]
+          if (edge[pin.name] !== undefined) continue
+          let side
+          for (let back = index - 1; back >= 0 && side === undefined; back -= 1) side = edge[part.pins[back].name]
+          for (let ahead = index + 1; ahead < part.pins.length && side === undefined; ahead += 1) side = edge[part.pins[ahead].name]
+          edge[pin.name] = side ?? sideOf(part, pin)
+        }
+        const raw = {}
+        for (const pin of part.pins) {
+          const shown = edge[pin.name]
+          raw[pin.name] = part.flip === true ? opposite(shown) : shown
+        }
+        sides.set(part.id, raw)
+      }
+      return sides
+    }
+
+    /**
+     * The tidy result: where every card goes, and the edges each module's pins
+     * should show on. Cards keep the side, order and distance they were drawn
+     * at, snapped into columns; only the overlaps and the pin edges change.
+     */
+    function tidyParts(parts, nets) {
+      if (parts.length === 0) return { positions: new Map(), sides: new Map() }
+
+      // 1. Edges, judged from the drawing as it is.
+      const shown = new Map(parts.map(part => [part.id, [part.at[0], part.at[1]]]))
+      const sides = assignSides(parts, nets, shown)
+      const drawn = parts.map(part => withSides(part, sides.get(part.id)))
+
+      // 2. The anchor: a board, otherwise the most wired part.
+      const edges = weightsOf(parts, nets)
+      const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
+      const boards = drawn.filter(part => part.kind === 'board')
+      const pool = boards.length > 0 ? boards : drawn
+      const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
+      const hubCentre = hub.at[0] + PART_W / 2
+
+      // 3. Columns: the side the card was drawn on decides which side of the
+      //    board it stays on, and how far out it was decides the column.
+      const lanes = { left: [], right: [] }
+      for (const part of drawn) {
+        if (part.id === hub.id) continue
+        const dx = part.at[0] + PART_W / 2 - hubCentre
+        lanes[dx < 0 ? 'left' : 'right'].push({ part, distance: Math.abs(dx) })
       }
 
-      // Cards must not overlap; the hub never moves, so it pushes the others.
-      const boxes = parts.map(part => ({
-        id: part.id,
-        x: placed.get(part.id).x,
-        y: placed.get(part.id).y,
-        w: PART_W,
-        h: partHeight(part),
-      }))
-      for (let round = 0; round < TIDY.rounds; round += 1) {
-        let moved = false
-        for (let a = 0; a < boxes.length; a += 1) {
-          for (let b = a + 1; b < boxes.length; b += 1) {
-            const from = boxes[a]
-            const to = boxes[b]
-            const dx = (to.x + to.w / 2) - (from.x + from.w / 2)
-            const dy = (to.y + to.h / 2) - (from.y + from.h / 2)
-            const across = (from.w + to.w) / 2 + TIDY.margin - Math.abs(dx)
-            const down = (from.h + to.h) / 2 + TIDY.margin - Math.abs(dy)
-            if (across <= 0 || down <= 0) continue
-            moved = true
-            const fixedFrom = from.id === hub.id
-            const fixedTo = to.id === hub.id
-            const shareFrom = fixedFrom ? 0 : fixedTo ? 1 : 0.5
-            const shareTo = fixedTo ? 0 : fixedFrom ? 1 : 0.5
-            if (across < down) {
-              const dir = dx >= 0 ? 1 : -1
-              from.x -= (across / 2) * 2 * shareFrom * dir
-              to.x += (across / 2) * 2 * shareTo * dir
-            } else {
-              const dir = dy >= 0 ? 1 : -1
-              from.y -= (down / 2) * 2 * shareFrom * dir
-              to.y += (down / 2) * 2 * shareTo * dir
-            }
+      const positions = new Map([[hub.id, [hub.at[0], hub.at[1]]]])
+      for (const side of ['left', 'right']) {
+        const lane = lanes[side]
+        lane.sort((a, b) => a.distance - b.distance || a.part.at[1] - b.part.at[1] || (a.part.id < b.part.id ? -1 : 1))
+        const columns = []
+        let anchor
+        for (const entry of lane) {
+          const fresh = anchor === undefined || entry.distance - anchor > TIDY.cluster
+          if (fresh && columns.length < TIDY.columns) {
+            anchor = entry.distance
+            columns.push([entry.part])
+          } else {
+            columns[columns.length - 1].push(entry.part)
           }
         }
-        if (!moved) break
-      }
-      const positions = new Map()
-      for (const box of boxes) {
-        if (box.id === hub.id) {
-          positions.set(box.id, [hub.at[0], hub.at[1]])
-          continue
+        for (const [index, column] of columns.entries()) {
+          const step = (index + 1) * (PART_W + TIDY.gap)
+          const x = side === 'left' ? hub.at[0] - step : hub.at[0] + step
+          column.sort((a, b) => a.at[1] - b.at[1] || (a.id < b.id ? -1 : 1))
+          let cursor = -Infinity
+          for (const part of column) {
+            // A card keeps the height it was drawn at unless that would overlap
+            // the card above it.
+            const y = Math.max(part.at[1], cursor)
+            positions.set(part.id, [
+              Math.round(x / TIDY.grid) * TIDY.grid,
+              Math.round(y / TIDY.grid) * TIDY.grid,
+            ])
+            cursor = y + partHeight(part) + TIDY.row
+          }
         }
-        positions.set(box.id, [
-          Math.round(box.x / TIDY.grid) * TIDY.grid,
-          Math.round(box.y / TIDY.grid) * TIDY.grid,
-        ])
       }
-      return { positions, flips }
+      return { positions, sides }
     }
 
     function contentBounds(doc) {
@@ -623,7 +651,7 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onPinSide, onPinMove, onPinLayout, onCopy, onClose }) {
+    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onPinSide, onPinMove, onCopy, onClose }) {
       const mode = part.flip === undefined ? (flipped ? '自动 · 朝右' : '自动 · 朝左') : (flipped ? '已翻转' : '不翻转')
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
@@ -660,13 +688,7 @@ window.__ModuleLoader__.load({
         part.note === undefined ? null : h('div', {
           style: { fontSize: '10.5px', color: 'var(--dsw-alias-label-secondary,#5c6068)', margin: '6px 0' },
         }, part.note),
-        h('div', { style: { margin: '8px 0 2px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}`),
-        h('div', { className: 'ew-pin-actions' },
-          h(Button, { onClick: () => onPinLayout(part, 'left'), title: '全部放左边一列' }, '全左'),
-          h(Button, { onClick: () => onPinLayout(part, 'split'), title: '一半放左、一半放右' }, '对半分'),
-          h(Button, { onClick: () => onPinLayout(part, 'right'), title: '全部放右边一列' }, '全右'),
-          h(Button, { onClick: () => onPinLayout(part, 'swap'), title: '左右列对调' }, '⇋ 换边')),
-        h('div', { className: 'ew-badge', style: { margin: '6px 0 2px', whiteSpace: 'normal' } }, '每个引脚单独调：点「左/右」换边，↑↓ 调顺序'),
+        h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}（点「左/右」换边，↑↓ 调顺序）`),
         part.pins.map((pin, index) => h('div', { className: 'ew-pinrow', key: pin.name },
           h('code', {}, pin.name),
           h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''}`),
@@ -1130,7 +1152,7 @@ window.__ModuleLoader__.load({
       const patchPins = (part, mutate) => {
         const pins = part.pins.map(pin => ({ ...pin }))
         mutate(pins)
-        void save([{ type: 'update_part', id: part.id, patch: { pins } }], '已调整引脚')
+        void save([{ type: 'update_part', id: part.id, patch: { pins, hand: true } }], '已调整引脚')
       }
       const rotatePin = (part, pin) => patchPins(part, pins => {
         const target = pins.find(candidate => candidate.name === pin.name)
@@ -1146,24 +1168,6 @@ window.__ModuleLoader__.load({
         const [moved] = pins.splice(from, 1)
         pins.splice(to, 0, moved)
       })
-      // Quick layouts for the whole card. The stored side is what the card shows,
-      // so a flipped part needs the opposite value written down.
-      const pinLayout = (part, mode) => {
-        const flipped = part.flip === true
-        const store = side => (flipped ? (side === 'left' ? 'right' : 'left') : side)
-        patchPins(part, pins => {
-          const half = Math.ceil(pins.length / 2)
-          pins.forEach((pin, index) => {
-            if (mode === 'swap') {
-              pin.side = store(sideOf(part, pin) === 'left' ? 'right' : 'left')
-              return
-            }
-            if (mode === 'left') pin.side = store('left')
-            else if (mode === 'right') pin.side = store('right')
-            else pin.side = store(index < half ? 'left' : 'right')
-          })
-        })
-      }
       const setFlip = (id, flip) => {
         void save([{ type: 'flip', id, flip }], flip === null ? '已恢复自动朝向' : flip ? '已左右翻转' : '已固定朝向')
       }
@@ -1223,26 +1227,36 @@ window.__ModuleLoader__.load({
 
       const tidyUp = () => {
         if (doc === undefined || doc.parts.length === 0) return
-        const { positions, flips } = tidyParts(doc.parts, doc.nets)
+        const { positions, sides } = tidyParts(doc.parts, doc.nets)
         const ops = []
         const moved = []
+        let placed = 0
+        let split = 0
         for (const part of doc.parts) {
           const at = positions.get(part.id)
           if (at === undefined) continue
-          const shown = part.flip === undefined ? mirrors.get(part.id) === true : part.flip === true
-          const flip = flips.get(part.id)
-          const wantsFlip = flip !== undefined && flip !== shown
-          moved.push({ ...part, at, flip: flip === undefined ? part.flip : flip })
+          const edge = sides.get(part.id)
+          const pins = edge === undefined
+            ? part.pins
+            : part.pins.map(pin => (
+              edge[pin.name] === undefined || edge[pin.name] === pin.side ? pin : { ...pin, side: edge[pin.name] }
+            ))
+          moved.push({ ...part, at, pins })
           if (Math.round(part.at[0]) !== at[0] || Math.round(part.at[1]) !== at[1]) {
             ops.push({ type: 'move', id: part.id, at })
+            placed += 1
           }
-          if (wantsFlip) ops.push({ type: 'flip', id: part.id, flip })
+          if (edge !== undefined && pins.some((pin, index) => pin.side !== part.pins[index].side)) {
+            ops.push({ type: 'set_pin_sides', id: part.id, sides: edge })
+            split += 1
+          }
         }
         if (ops.length === 0) {
           setMessage('已经很整齐了')
           return
         }
-        void save(ops, `已整理 ${ops.length} 处（位置与朝向）`)
+        const what = [placed > 0 ? `移动 ${placed} 个` : '', split > 0 ? `引脚分边 ${split} 个` : ''].filter(Boolean)
+        void save(ops, `已整理：${what.join('，')}`)
         fitToBounds(contentBounds({ parts: moved }))
       }
 
@@ -1471,7 +1485,6 @@ window.__ModuleLoader__.load({
             onIcon: icon => setIcon(selectedPart.id, icon),
             onPinSide: (part, pin) => rotatePin(part, pin),
             onPinMove: (part, pin, delta) => shiftPin(part, pin, delta),
-            onPinLayout: (part, mode) => pinLayout(part, mode),
             onCopy: copy,
             onClose: () => setSelected(undefined),
           })
@@ -1527,7 +1540,7 @@ window.__ModuleLoader__.load({
         h(Button, {
           onClick: tidyUp,
           disabled: doc === undefined || doc.parts.length < 2,
-          title: '按连线自动排布部件：只改位置，不改接线',
+          title: '按连线自动排布：挪位置，并把每个模块的引脚分到左右两边（不改接线）',
         }, '一键整理'),
         h(Button, { onClick: fit, disabled: doc === undefined }, '适配视图'),
         h(Button, {
@@ -1559,7 +1572,7 @@ window.__ModuleLoader__.load({
       doc === undefined ? emptyEl : world,
       pendingEl,
       inspectorEl,
-      h('div', { className: 'ew-hint' }, '拖标题移动 · 引脚圆点拖线 · 点部件调引脚左右 · 实心圆点=已接线 · 滚轮缩放 · Delete 删线'))
+      h('div', { className: 'ew-hint' }, '拖标题移动 · 从引脚圆点拖到另一个引脚连线 · 实心圆点=已接线 · 点线编辑 · 滚轮缩放 · Delete 删线'))
 
       return h('div', { className: 'ew-root' },
         bar,

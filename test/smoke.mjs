@@ -324,16 +324,46 @@ function codes(diagnostics) {
   const doc = withPart(board(), 'ssd1306', 'oled')
   const part = doc.parts[1]
   const pins = part.pins.map((pin, index) => ({ ...pin, side: index === 0 ? 'right' : 'left' }))
-  const edited = applyOps(doc, [{ type: 'update_part', id: 'oled', patch: { pins } }])
+  const edited = applyOps(doc, [{ type: 'update_part', id: 'oled', patch: { pins, hand: true } }])
   const oled = edited.parts.find(candidate => candidate.id === 'oled')
   assert.equal(oled.pinsManual, true)
+  assert.equal(oled.pinsHand, true, 'the page marks a hand layout')
   assert.equal(oled.pins[0].side, 'right')
 
   const reordered = [oled.pins[2], oled.pins[0], oled.pins[1], oled.pins[3]].map(pin => ({ ...pin }))
-  const shuffled = applyOps(edited, [{ type: 'update_part', id: 'oled', patch: { pins: reordered } }])
+  const shuffled = applyOps(edited, [{ type: 'update_part', id: 'oled', patch: { pins: reordered, hand: true } }])
   const reloaded = normalizeDocument(JSON.parse(JSON.stringify(shuffled))).parts.find(candidate => candidate.id === 'oled')
   assert.deepEqual(reloaded.pins.map(pin => pin.name), ['SCL', 'VCC', 'GND', 'SDA'])
   assert.equal(reloaded.pinsManual, true)
+  assert.equal(reloaded.pinsHand, true)
+
+  // A pin list that came from a model or a photo is not a hand layout.
+  const fromModel = applyOps(board(), [{ type: 'add_part', part: { model: 'ssd1306', id: 'oled2' } }])
+  assert.equal(fromModel.parts[1].pinsManual, undefined)
+  assert.equal(fromModel.parts[1].pinsHand, undefined)
+}
+
+// 13. Splitting a module's pins between its edges is layout only: the nets stay,
+//     the order stays, and the part is still free to follow its template.
+{
+  let doc = withPart(board(), 'dht22', 'dht')
+  doc = applyOps(doc, [{ type: 'connect', nodes: ['mcu:GPIO4', 'dht:DATA'] }])
+  const before = doc.parts.find(part => part.id === 'dht')
+  const pinsBefore = before.pins.map(pin => pin.name)
+  const split = applyOps(doc, [{
+    type: 'set_pin_sides',
+    id: 'dht',
+    sides: { VCC: 'left', GND: 'right', DATA: 'right' },
+  }])
+  const after = split.parts.find(part => part.id === 'dht')
+  assert.deepEqual(after.pins.map(pin => pin.name), pinsBefore, 'the pin order does not change')
+  assert.deepEqual(after.pins.map(pin => pin.side), ['left', 'right', 'right'])
+  assert.equal(after.pinsManual, undefined, 'a split is not a hand-placed layout')
+  assert.deepEqual(split.nets, doc.nets)
+  const reloaded = normalizeDocument(JSON.parse(JSON.stringify(split))).parts.find(part => part.id === 'dht')
+  assert.deepEqual(reloaded.pins.map(pin => pin.side), ['left', 'right', 'right'])
+  assert.throws(() => applyOps(split, [{ type: 'set_pin_sides', id: 'dht', sides: { VCC: 'left' } }]), /没有变化/)
+  assert.throws(() => applyOps(split, [{ type: 'set_pin_sides', id: 'nope', sides: { VCC: 'left' } }]), /未知部件/)
 }
 
 function assertsPending(doc) {

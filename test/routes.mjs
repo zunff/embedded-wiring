@@ -174,6 +174,17 @@ try {
   assert.equal(confirmed.status, 200)
   assert.ok(!confirmed.json.diagnostics.some(item => item.code === 'photo-unverified'))
 
+  // Splitting pins between the two edges is layout only, and rides the same route.
+  const split = await call('/embedded-wiring/ops', 'POST', {
+    workspace: workspace.id,
+    baseRev: confirmed.json.rev,
+    ops: [{ type: 'set_pin_sides', id: 'photo1', sides: { VCC: 'left', GND: 'right' } }],
+  })
+  assert.equal(split.status, 200, JSON.stringify(split.json))
+  const photoPart = split.json.doc.parts.find(part => part.id === 'photo1')
+  assert.equal(photoPart.pins.find(pin => pin.name === 'GND').side, 'right')
+  assert.equal(split.json.doc.nets.length, confirmed.json.doc.nets.length, 'a split keeps the wiring')
+
   // A stale write is refused with the current document, never applied.
   const stale = await call('/embedded-wiring/ops', 'POST', {
     workspace: workspace.id,
@@ -182,7 +193,7 @@ try {
   })
   assert.equal(stale.status, 409)
   assert.equal(stale.json.conflict, true)
-  assert.equal(stale.json.doc.rev, confirmed.json.rev)
+  assert.equal(stale.json.doc.rev, split.json.rev)
 
   // Write guards.
   assert.equal((await call('/embedded-wiring/ops', 'GET')).status, 405)
