@@ -164,10 +164,31 @@ const cardsApart = cards => {
   assert.ok(anchors.get('left:VCC').x < anchors.get('mcu:3V3').x, 'a part drawn on the left stays left')
   assert.ok(anchors.get('right:SIG').x > anchors.get('mcu:GPIO4').x, 'a part drawn on the right stays right')
   assert.equal(anchors.get('left:VCC').x, Math.round((500 - (210 + 96)) / 10) * 10, 'columns sit one gap apart')
+  assert.equal(anchors.get('left:VCC').y, anchors.get('mcu:3V3').y, 'a card lines up with the pin it is wired to')
+  assert.equal(anchors.get('right:SIG').y, anchors.get('mcu:GPIO4').y, 'the wire between them is straight')
   cardsApart(cards)
   const again = tidyParts([mcu, left, right], nets)
   assert.deepEqual([...again.positions], [...positions], 'same input, same layout')
   assert.deepEqual([...again.sides], [...sides], 'same input, same sides')
+}
+
+// 5b. A card is not left hanging where it was drawn: it drops to the row of the
+//     pin it is wired to, so a motor sits beside the driver pin that feeds it.
+{
+  const mcu = {
+    id: 'mcu',
+    kind: 'board',
+    at: [500, 300],
+    pins: Array.from({ length: 10 }, (_, index) => ({ name: `P${index}`, role: 'bidir', side: 'right' })),
+  }
+  const motor = { id: 'motor', kind: 'module', at: [900, 100], pins: [{ name: 'A', role: 'passive', side: 'left' }] }
+  const nets = [{ nodes: ['mcu:P8', 'motor:A'] }]
+  const { positions } = tidyParts([mcu, motor], nets)
+  const pinRowY = 300 + 30 + 8 + 8 * 20 + 10
+  assert.equal(positions.get('motor')[1], pinRowY - 48, 'moved down to the pin it talks to')
+  const placed = [mcu, motor].map(part => ({ ...part, at: positions.get(part.id) }))
+  const { anchors } = scene(placed)
+  assert.equal(anchors.get('motor:A').y, anchors.get('mcu:P8').y)
 }
 
 // 6. A module wired both ways has its pins split between its edges: the battery

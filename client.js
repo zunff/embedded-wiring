@@ -349,12 +349,14 @@ window.__ModuleLoader__.load({
     }
 
     // ---- Auto layout --------------------------------------------------------
-    // "一键整理" keeps the shape of the drawing and makes it readable: each
+    // "一键整理" keeps the shape of the drawing and makes it readable. Each
     // module's pins are split between its two edges the way a real header is —
     // whatever talks to the left shows on the left edge, whatever talks to the
-    // right shows on the right, and an unwired pin follows its neighbour in the
-    // pin list — cards snap into columns beside the board in the same order they
-    // already have, and cards sharing a column are stacked so that no two
+    // right shows on the right, a pin with no vote joins the twin of its
+    // connector, and a ground pin is never dragged around by the ground net.
+    // Cards stay on the side of the board they were drawn on and snap into
+    // columns; inside a column each card slides up or down until the pin it is
+    // wired to sits on the same row as the pin it talks to, and cards never
     // overlap. The board never moves, and a part the user split by hand keeps
     // the edges it was given. Pure geometry, so the tests cover it.
 
@@ -497,10 +499,90 @@ window.__ModuleLoader__.load({
       return sides
     }
 
+    const pinNamed = (part, name) => part.pins.find(pin => pin.name === name)
+
+    /** Distance from a card's top edge to the middle of one of its pins. */
+    function pinOffset(part, pin) {
+      return HEAD + PAD_TOP + rowOf(part, pin) * ROW + ROW / 2
+    }
+
+    /**
+     * The anchor and the columns around it. A card stays on the side of the board
+     * it was drawn on, and cards at a similar distance share a column, nearest
+     * first, so the columns grow outwards from the board.
+     */
+    function columnsOf(drawn, nets) {
+      const edges = weightsOf(drawn, nets)
+      const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
+      const boards = drawn.filter(part => part.kind === 'board')
+      const pool = boards.length > 0 ? boards : drawn
+      const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
+      const hubCentre = hub.at[0] + PART_W / 2
+      const lanes = { left: [], right: [] }
+      for (const part of drawn) {
+        if (part.id === hub.id) continue
+        const dx = part.at[0] + PART_W / 2 - hubCentre
+        lanes[dx < 0 ? 'left' : 'right'].push({ part, distance: Math.abs(dx) })
+      }
+      const columns = []
+      for (const side of ['left', 'right']) {
+        const lane = lanes[side]
+        lane.sort((a, b) => a.distance - b.distance || a.part.at[1] - b.part.at[1] || (a.part.id < b.part.id ? -1 : 1))
+        const groups = []
+        let group
+        let anchor
+        for (const entry of lane) {
+          const fresh = anchor === undefined || entry.distance - anchor > TIDY.cluster
+          if (fresh && groups.length < TIDY.columns) {
+            anchor = entry.distance
+            group = [entry.part]
+            groups.push(group)
+          } else {
+            group.push(entry.part)
+          }
+        }
+        for (const [index, parts] of groups.entries()) {
+          const step = (index + 1) * (PART_W + TIDY.gap)
+          columns.push({ x: side === 'left' ? hub.at[0] - step : hub.at[0] + step, parts })
+        }
+      }
+      return { hub, columns }
+    }
+
+    /**
+     * Where a card wants to sit vertically: the pin it is wired to should land on
+     * the same row as the pin it talks to, which is what keeps wires short and
+     * straight. Only partners that are already placed count; a card with nothing
+     * placed keeps the height it was drawn at.
+     */
+    function wantedY(part, nets, placed, byId) {
+      let sum = 0
+      let weight = 0
+      for (const net of nets) {
+        const mine = net.nodes.filter(node => ownerOf(node) === part.id)
+        if (mine.length === 0) continue
+        const myPin = pinNamed(part, pinNameOf(mine[0]))
+        if (myPin === undefined) continue
+        const reach = netWeight(net)
+        for (const other of net.nodes) {
+          const id = ownerOf(other)
+          if (id === part.id) continue
+          const partner = placed.has(id) ? byId.get(id) : undefined
+          if (partner === undefined) continue
+          const partnerPin = pinNamed(partner, pinNameOf(other))
+          if (partnerPin === undefined) continue
+          sum += (placed.get(id)[1] + pinOffset(partner, partnerPin) - pinOffset(part, myPin)) * reach
+          weight += reach
+        }
+      }
+      return weight === 0 ? undefined : sum / weight
+    }
+
     /**
      * The tidy result: where every card goes, and the edges each module's pins
-     * should show on. Cards keep the side, order and distance they were drawn
-     * at, snapped into columns; only the overlaps and the pin edges change.
+     * should show on. Columns keep the drawing's left/right structure; inside a
+     * column each card lines up with the pins it is wired to, top to bottom, and
+     * two cards never overlap.
      */
     function tidyParts(parts, nets) {
       if (parts.length === 0) return { positions: new Map(), sides: new Map() }
@@ -509,54 +591,27 @@ window.__ModuleLoader__.load({
       const shown = new Map(parts.map(part => [part.id, [part.at[0], part.at[1]]]))
       const sides = assignSides(parts, nets, shown)
       const drawn = parts.map(part => withSides(part, sides.get(part.id)))
+      const byId = new Map(drawn.map(part => [part.id, part]))
 
-      // 2. The anchor: a board, otherwise the most wired part.
-      const edges = weightsOf(parts, nets)
-      const degree = id => [...(edges.get(id) ?? new Map()).values()].reduce((sum, value) => sum + value, 0)
-      const boards = drawn.filter(part => part.kind === 'board')
-      const pool = boards.length > 0 ? boards : drawn
-      const hub = pool.reduce((best, part) => (degree(part.id) > degree(best.id) ? part : best))
-      const hubCentre = hub.at[0] + PART_W / 2
-
-      // 3. Columns: the side the card was drawn on decides which side of the
-      //    board it stays on, and how far out it was decides the column.
-      const lanes = { left: [], right: [] }
-      for (const part of drawn) {
-        if (part.id === hub.id) continue
-        const dx = part.at[0] + PART_W / 2 - hubCentre
-        lanes[dx < 0 ? 'left' : 'right'].push({ part, distance: Math.abs(dx) })
-      }
-
+      // 2. Columns either side of the anchor, then each card placed at the height
+      //    its wiring asks for.
+      const { hub, columns } = columnsOf(drawn, nets)
       const positions = new Map([[hub.id, [hub.at[0], hub.at[1]]]])
-      for (const side of ['left', 'right']) {
-        const lane = lanes[side]
-        lane.sort((a, b) => a.distance - b.distance || a.part.at[1] - b.part.at[1] || (a.part.id < b.part.id ? -1 : 1))
-        const columns = []
-        let anchor
-        for (const entry of lane) {
-          const fresh = anchor === undefined || entry.distance - anchor > TIDY.cluster
-          if (fresh && columns.length < TIDY.columns) {
-            anchor = entry.distance
-            columns.push([entry.part])
-          } else {
-            columns[columns.length - 1].push(entry.part)
-          }
-        }
-        for (const [index, column] of columns.entries()) {
-          const step = (index + 1) * (PART_W + TIDY.gap)
-          const x = side === 'left' ? hub.at[0] - step : hub.at[0] + step
-          column.sort((a, b) => a.at[1] - b.at[1] || (a.id < b.id ? -1 : 1))
-          let cursor = -Infinity
-          for (const part of column) {
-            // A card keeps the height it was drawn at unless that would overlap
-            // the card above it.
-            const y = Math.max(part.at[1], cursor)
-            positions.set(part.id, [
-              Math.round(x / TIDY.grid) * TIDY.grid,
-              Math.round(y / TIDY.grid) * TIDY.grid,
-            ])
-            cursor = y + partHeight(part) + TIDY.row
-          }
+      for (const column of columns) {
+        const wanted = column.parts.map(part => ({
+          part,
+          y: wantedY(part, nets, positions, byId) ?? part.at[1],
+        }))
+        wanted.sort((a, b) => a.y - b.y || a.part.at[1] - b.part.at[1] || (a.part.id < b.part.id ? -1 : 1))
+        let cursor = -Infinity
+        for (const entry of wanted) {
+          // A card never climbs into the one above it.
+          const y = Math.max(entry.y, cursor)
+          positions.set(entry.part.id, [
+            Math.round(column.x / TIDY.grid) * TIDY.grid,
+            Math.round(y / TIDY.grid) * TIDY.grid,
+          ])
+          cursor = y + partHeight(entry.part) + TIDY.row
         }
       }
       return { positions, sides }
