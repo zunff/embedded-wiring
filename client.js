@@ -446,9 +446,10 @@ window.__ModuleLoader__.load({
           y: at.y + contact.py - contact.cy,
         })
         // A part hanging to the left of its parent should show its pins on its
-        // own right edge, i.e. facing the parent.
+        // own right edge, i.e. facing the parent. A hand-arranged pin layout is
+        // left exactly as the user made it.
         const uniform = new Set(child.pins.map(pin => templateSide(child, pin))).size === 1
-        if (child.kind !== 'board' && uniform && child.pins.length > 0) {
+        if (child.kind !== 'board' && child.pinsManual !== true && uniform && child.pins.length > 0) {
           const showing = templateSide(child, child.pins[0])
           const wanted = contact.side === 'left' ? 'right' : 'left'
           flips.set(child.id, showing !== wanted)
