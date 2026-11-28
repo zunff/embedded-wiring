@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
 .ew-pinrow code{font-size:10.5px;min-width:46px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .ew-pinrow .ew-badge{flex:1 1 auto;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ew-pin-btn{padding:0 4px;font-size:9.5px;line-height:15px;min-width:16px}
+.ew-pin-actions{display:flex;gap:4px;margin:4px 0 2px;flex-wrap:wrap}
 .ew-node code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10.5px}
 .ew-x{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-tertiary,#8b909a);cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
 .ew-x:hover{color:var(--dsw-alias-state-error-primary,#e03131)}
@@ -621,7 +622,7 @@ window.__ModuleLoader__.load({
           h(Button, { className: 'ew-btn-danger', onClick: onDisconnect }, '删除网络')))
     }
 
-    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onPinSide, onPinMove, onCopy, onClose }) {
+    function PartInspector({ part, flipped, onRemove, onVerify, onFlip, onAuto, onIcon, onPinSide, onPinMove, onPinLayout, onCopy, onClose }) {
       const mode = part.flip === undefined ? (flipped ? '自动 · 朝右' : '自动 · 朝左') : (flipped ? '已翻转' : '不翻转')
       return h('div', { className: 'ew-panel' },
         h('div', { className: 'ew-panel-title' },
@@ -658,7 +659,13 @@ window.__ModuleLoader__.load({
         part.note === undefined ? null : h('div', {
           style: { fontSize: '10.5px', color: 'var(--dsw-alias-label-secondary,#5c6068)', margin: '6px 0' },
         }, part.note),
-        h('div', { style: { margin: '8px 0 4px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}（点「左/右」换边，↑↓ 调顺序）`),
+        h('div', { style: { margin: '8px 0 2px', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary,#8b909a)' } }, `引脚 ${part.pins.length}`),
+        h('div', { className: 'ew-pin-actions' },
+          h(Button, { onClick: () => onPinLayout(part, 'left'), title: '全部放左边一列' }, '全左'),
+          h(Button, { onClick: () => onPinLayout(part, 'split'), title: '一半放左、一半放右' }, '对半分'),
+          h(Button, { onClick: () => onPinLayout(part, 'right'), title: '全部放右边一列' }, '全右'),
+          h(Button, { onClick: () => onPinLayout(part, 'swap'), title: '左右列对调' }, '⇋ 换边')),
+        h('div', { className: 'ew-badge', style: { margin: '6px 0 2px', whiteSpace: 'normal' } }, '每个引脚单独调：点「左/右」换边，↑↓ 调顺序'),
         part.pins.map((pin, index) => h('div', { className: 'ew-pinrow', key: pin.name },
           h('code', {}, pin.name),
           h('span', { className: 'ew-badge' }, `${pin.role}${Number.isFinite(pin.volt) ? ` ${pin.volt}V` : ''}`),
@@ -1138,6 +1145,24 @@ window.__ModuleLoader__.load({
         const [moved] = pins.splice(from, 1)
         pins.splice(to, 0, moved)
       })
+      // Quick layouts for the whole card. The stored side is what the card shows,
+      // so a flipped part needs the opposite value written down.
+      const pinLayout = (part, mode) => {
+        const flipped = part.flip === true
+        const store = side => (flipped ? (side === 'left' ? 'right' : 'left') : side)
+        patchPins(part, pins => {
+          const half = Math.ceil(pins.length / 2)
+          pins.forEach((pin, index) => {
+            if (mode === 'swap') {
+              pin.side = store(sideOf(part, pin) === 'left' ? 'right' : 'left')
+              return
+            }
+            if (mode === 'left') pin.side = store('left')
+            else if (mode === 'right') pin.side = store('right')
+            else pin.side = store(index < half ? 'left' : 'right')
+          })
+        })
+      }
       const setFlip = (id, flip) => {
         void save([{ type: 'flip', id, flip }], flip === null ? '已恢复自动朝向' : flip ? '已左右翻转' : '已固定朝向')
       }
@@ -1445,6 +1470,7 @@ window.__ModuleLoader__.load({
             onIcon: icon => setIcon(selectedPart.id, icon),
             onPinSide: (part, pin) => rotatePin(part, pin),
             onPinMove: (part, pin, delta) => shiftPin(part, pin, delta),
+            onPinLayout: (part, mode) => pinLayout(part, mode),
             onCopy: copy,
             onClose: () => setSelected(undefined),
           })
@@ -1532,7 +1558,7 @@ window.__ModuleLoader__.load({
       doc === undefined ? emptyEl : world,
       pendingEl,
       inspectorEl,
-      h('div', { className: 'ew-hint' }, '拖标题移动 · 从引脚圆点拖到另一个引脚连线 · 实心圆点=已接线 · 点线编辑 · 滚轮缩放 · Delete 删线'))
+      h('div', { className: 'ew-hint' }, '拖标题移动 · 引脚圆点拖线 · 点部件调引脚左右 · 实心圆点=已接线 · 滚轮缩放 · Delete 删线'))
 
       return h('div', { className: 'ew-root' },
         bar,
